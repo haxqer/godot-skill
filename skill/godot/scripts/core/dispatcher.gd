@@ -51,6 +51,26 @@ func _delegate_operation(operation: String, params: Dictionary) -> void:
             script_path = local_dir.path_join("../scene/create_scene.gd")
         "add_node":
             script_path = local_dir.path_join("../scene/add_node.gd")
+        "scene_batch":
+            script_path = local_dir.path_join("../scene/scene_batch.gd")
+        "instantiate_scene":
+            script_path = local_dir.path_join("../scene/instantiate_scene.gd")
+        "configure_node":
+            script_path = local_dir.path_join("../scene/configure_node.gd")
+        "configure_control":
+            script_path = local_dir.path_join("../scene/configure_control.gd")
+        "attach_script":
+            script_path = local_dir.path_join("../scene/attach_script.gd")
+        "connect_signal":
+            script_path = local_dir.path_join("../scene/connect_signal.gd")
+        "disconnect_signal":
+            script_path = local_dir.path_join("../scene/disconnect_signal.gd")
+        "remove_node":
+            script_path = local_dir.path_join("../scene/remove_node.gd")
+        "reparent_node":
+            script_path = local_dir.path_join("../scene/reparent_node.gd")
+        "reorder_node":
+            script_path = local_dir.path_join("../scene/reorder_node.gd")
         "load_sprite":
             script_path = local_dir.path_join("../scene/load_sprite.gd")
         "save_scene":

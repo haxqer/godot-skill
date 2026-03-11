@@ -1,4 +1,4 @@
 interface:
   display_name: "Godot"
-  short_description: "Build, inspect, and debug Godot projects"
-  default_prompt: "Use $godot to inspect a Godot project, make scene changes with the bundled workflows, and use any host-provided Godot runtime tools for debugging."
+  short_description: "Build, inspect, fully configure, and debug Godot projects"
+  default_prompt: "Use $godot to inspect a Godot project, perform full scene editing with scene_batch or the standalone scene operations, and use any host-provided Godot runtime tools for debugging."

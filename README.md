@@ -34,4 +34,6 @@ Unzip `dist/godot.zip` into your skills directory. The archive already contains 
 ## Notes
 
 - The skill payload itself intentionally excludes a `README.md` so it stays aligned with skill packaging guidance.
+- The bundled dispatcher fallback now supports full scene editing workflows: batch scene transactions, node configuration, `Control` layout and theme overrides, script attachment, signal wiring, and hierarchy refactors in addition to the original skeleton-building helpers.
+- The scene editing API is designed against the current stable Godot docs and verified locally on Godot `4.6.1`.
 - The bundled dispatcher fallback requires a local `godot` CLI with shell access.

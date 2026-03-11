@@ -1,6 +1,6 @@
 ---
 name: godot
-description: Godot project development and debugging skill for inspecting projects, creating or editing scenes, adding nodes, assigning assets, exporting mesh libraries, and repairing Godot 4.4+ resource UIDs. Use when Codex needs to work inside a Godot project and should follow the bundled Godot workflows; if the host exposes native Godot runtime tools, use them to run the project and inspect debug output.
+description: Godot project development and debugging skill for inspecting projects, building and fully configuring scenes, wiring scripts and signals, configuring UI, exporting mesh libraries, and repairing resource UIDs. Use when Codex needs to work inside a Godot project and should follow the bundled Godot workflows; if the host exposes native Godot runtime tools, use them to run the project and inspect debug output.
 ---
 
 # Godot
@@ -13,7 +13,7 @@ Use this skill to inspect and modify Godot projects with the bundled workflows, 
 - Resolve `project_path` to an absolute project directory when a host tool requires it.
 - Normalize scene and resource paths to `res://...` when working directly with the bundled Godot scripts in this skill.
 - Inspect unfamiliar projects with any available project-discovery tools, or fall back to reading `project.godot`, scene files, and scripts directly.
-- Require a local `godot` CLI with shell access before using the bundled dispatcher fallback. Prefer Godot 4.4+.
+- Require a local `godot` CLI with shell access before using the bundled dispatcher fallback. The bundled scene editing APIs are designed against the current stable Godot docs and tested on Godot `4.6.1`.
 - Install this skill in a folder named `godot` so the folder name matches `name: godot` in hosts that validate skill naming.
 
 ## Portable CLI Fallback
@@ -23,21 +23,21 @@ Use this path in shell-capable environments such as Claude Antigravity when dedi
 ```bash
 godot --headless --path /absolute/path/to/project \
   --script /absolute/path/to/skill/scripts/core/dispatcher.gd \
-  create_scene '{"scene_path":"scenes/main.tscn","root_node_type":"Node2D"}'
+  scene_batch '{"scene_path":"scenes/main.tscn","create_if_missing":true,"root_node_type":"Node2D","actions":[{"type":"add_node","node_type":"Camera2D","node_name":"Camera"}]}'
 ```
 
-- Replace `create_scene` with any supported operation: `create_scene`, `add_node`, `load_sprite`, `save_scene`, `export_mesh_library`, `get_uid`, or `resave_resources`.
+- Replace `scene_batch` with any supported operation: `scene_batch`, `create_scene`, `add_node`, `instantiate_scene`, `configure_node`, `configure_control`, `attach_script`, `connect_signal`, `disconnect_signal`, `remove_node`, `reparent_node`, `reorder_node`, `load_sprite`, `save_scene`, `export_mesh_library`, `get_uid`, or `resave_resources`.
 - Pass parameters as a single JSON object using the snake_case field names expected by the bundled GDScript.
 - Do not use the dispatcher for runtime lifecycle actions. It does not implement `run_project`, `get_debug_output`, or `stop_project`.
 
 ## Follow The Main Workflows
 
-### Create Or Modify A Scene
+### Build Or Modify A Scene
 
-1. Call `create_scene` to create the root scene.
-2. Call `add_node` to build the node tree from the root downward.
-3. Call `load_sprite` only after the target `Sprite2D`, `Sprite3D`, or `TextureRect` node exists.
-4. Call `save_scene` after structural changes, or use its alternate save path support when duplicating a scene.
+1. Prefer `scene_batch` for multi-step work so the scene loads once, actions run in memory, and the scene saves only if every action succeeds.
+2. Use `create_scene` when you only need a root scene, then follow with standalone operations if batching is unnecessary.
+3. Use `add_node` or `instantiate_scene` to build structure, `configure_node` for general properties and metadata, `configure_control` for `Control` layout and theme overrides, and `attach_script` plus `connect_signal` to finish behavior wiring.
+4. Keep `load_sprite` for compatibility, but prefer `configure_node` for direct `texture` assignment on sprite-compatible nodes.
 5. Run the project after non-trivial edits instead of assuming the scene still loads.
 
 ### Run And Debug
@@ -48,16 +48,78 @@ godot --headless --path /absolute/path/to/project \
 
 ### Use The Specialized Operations
 
+- Use `scene_batch` as the default scene editing entrypoint for script and UI work.
+- Use `configure_control` when a `Control` node needs presets, anchors, offsets, size flags, minimum size, or theme overrides.
+- Use `attach_script`, `connect_signal`, and `disconnect_signal` to wire scene logic without hand-editing `.tscn` files.
+- Use `remove_node`, `reparent_node`, and `reorder_node` to refactor hierarchy after the scene already exists.
 - Use `export_mesh_library` to build a `MeshLibrary` from a 3D scene for `GridMap`.
-- Use `get_uid` to inspect a resource UID on Godot 4.4+ projects.
+- Use `get_uid` to inspect a resource UID on Godot projects that emit `.uid` sidecar files.
 - Use `resave_resources` or the server's equivalent project-wide UID refresh operation when missing `.uid` files break references.
+
+## Typed JSON Values
+
+- Use plain JSON scalars, arrays, and objects for ordinary values.
+- Use `{"__resource":"res://path/to/resource"}` to load a Godot resource before assignment.
+- Use typed wrappers for engine value types when the target property is not plain JSON:
+  - `{"__type":"Vector2","x":10,"y":20}`
+  - `{"__type":"Color","r":1,"g":0.5,"b":0.25,"a":1}`
+  - `{"__type":"NodePath","value":"root/Button"}`
+- `configure_node.properties`, `configure_node.indexed_properties`, `attach_script.script_properties`, `configure_control.theme_overrides`, and `scene_batch.actions[*]` all accept the same typed-value format.
+
+## Scene Editing Surface
+
+- `scene_batch`: sequential multi-action transaction with `create_if_missing`, `root_node_type`, `root_node_name`, `save_path`, and `actions`.
+- `create_scene`: create and save a root scene with optional `root_node_name`, `properties`, and `indexed_properties`.
+- `add_node`: add a new node under `parent_node_path`, optionally at `index`, with typed `properties` and `indexed_properties`.
+- `instantiate_scene`: instance a child scene under `parent_node_path`, optionally rename it, move it to an index, and apply root properties.
+- `configure_node`: set regular properties, indexed properties, groups, metadata, and `unique_name_in_owner` on an existing node.
+- `configure_control`: configure `Control` presets, anchors, offsets, `position`, `size`, `custom_minimum_size`, size flags, stretch ratio, and theme overrides.
+- `attach_script`: assign a script and then write exported properties.
+- `connect_signal`: connect a signal to a target node method with persistent connection flags by default and optional `binds`.
+- `disconnect_signal`: remove persistent scene connections by source node, signal, target node, and method.
+- `remove_node`, `reparent_node`, `reorder_node`: mutate existing hierarchy without rewriting the scene by hand.
 
 ## Respect The Bundled Implementation
 
 - Read `scripts/core/dispatcher.gd` when adding or changing Godot-side operations.
-- Add scene operations under `scripts/scene/`, mesh operations under `scripts/mesh/`, and shared utilities under `scripts/utils/`.
+- Add scene operations under `scripts/scene/`, mesh operations under `scripts/mesh/`, shared utilities under `scripts/utils/`, and shared scene editing helpers under `scripts/core/`.
 - Keep Godot-side parameter names in snake_case when editing these scripts, for example `scene_path`, `root_node_type`, `parent_node_path`, `node_type`, and `node_name`.
 - Preserve the current relative import pattern inside the GDScript files so the headless dispatcher keeps working.
+
+## Examples
+
+### Menu UI In One Batch
+
+```bash
+godot --headless --path /absolute/path/to/project \
+  --script /absolute/path/to/skill/scripts/core/dispatcher.gd \
+  scene_batch '{
+    "scene_path":"scenes/menu.tscn",
+    "create_if_missing":true,
+    "root_node_type":"Control",
+    "root_node_name":"Menu",
+    "actions":[
+      {"type":"add_node","parent_node_path":"root","node_type":"PanelContainer","node_name":"Panel"},
+      {"type":"configure_control","node_path":"root/Panel","layout_preset":"FULL_RECT"},
+      {"type":"add_node","parent_node_path":"root/Panel","node_type":"Button","node_name":"StartButton","properties":{"text":"Start"}},
+      {"type":"configure_control","node_path":"root/Panel/StartButton","size_flags_horizontal":"EXPAND_FILL","custom_minimum_size":{"__type":"Vector2","x":240,"y":64}}
+    ]
+  }'
+```
+
+### Attach Script And Connect Button Signal
+
+```bash
+godot --headless --path /absolute/path/to/project \
+  --script /absolute/path/to/skill/scripts/core/dispatcher.gd \
+  scene_batch '{
+    "scene_path":"scenes/menu.tscn",
+    "actions":[
+      {"type":"attach_script","node_path":"root","script_path":"scripts/menu_controller.gd","script_properties":{"menu_title":"Main Menu"}},
+      {"type":"connect_signal","node_path":"root/StartButton","signal_name":"pressed","target_node_path":"root","method_name":"_on_start_pressed","binds":["clicked"]}
+    ]
+  }'
+```
 
 ## Check Before You Finish
 

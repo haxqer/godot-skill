@@ -1,0 +1,9 @@
+[gd_scene format=3]
+
+[node name="Root" type="Node"]
+
+[node name="Standalone" type="Node" parent="."]
+
+[node name="RemoveMe" type="Node" parent="."]
+
+[node name="Container" type="Node" parent="."]

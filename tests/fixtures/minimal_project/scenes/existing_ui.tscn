@@ -1,0 +1,21 @@
+[gd_scene format=3]
+
+[node name="StatusScreen" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+
+[node name="StatusLabel" type="Label" parent="."]
+layout_mode = 0
+offset_left = 16.0
+offset_top = 16.0
+offset_right = 112.0
+offset_bottom = 39.0
+text = "Pending"
+
+[node name="CancelButton" type="Button" parent="."]
+layout_mode = 0
+offset_left = 16.0
+offset_top = 56.0
+offset_right = 108.0
+offset_bottom = 87.0
+text = "Cancel"
