@@ -1,0 +1,4 @@
+interface:
+  display_name: "Godot"
+  short_description: "Build, inspect, and debug Godot projects"
+  default_prompt: "Use $godot to inspect a Godot project, make scene changes with the bundled workflows, and use any host-provided Godot runtime tools for debugging."

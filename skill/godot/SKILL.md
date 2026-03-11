@@ -1,19 +1,20 @@
 ---
 name: godot
-description: Godot project development and debugging skill for inspecting projects, creating or editing scenes, adding nodes, assigning assets, exporting mesh libraries, running the project, reading debug output, and repairing Godot 4.4+ resource UIDs. Use when Codex needs to work inside a Godot project and should follow the bundled Godot workflows and automation tools.
-compatibility: Requires a local godot CLI with shell access for the bundled dispatcher fallback. Godot 4.4+ is recommended. Install this skill in a folder named godot so the directory matches the skill name in environments that validate folder naming.
+description: Godot project development and debugging skill for inspecting projects, creating or editing scenes, adding nodes, assigning assets, exporting mesh libraries, and repairing Godot 4.4+ resource UIDs. Use when Codex needs to work inside a Godot project and should follow the bundled Godot workflows; if the host exposes native Godot runtime tools, use them to run the project and inspect debug output.
 ---
 
 # Godot
 
-Use this skill to inspect, modify, run, and debug Godot projects with the bundled workflows, scripts, and available Godot automation tooling.
+Use this skill to inspect and modify Godot projects with the bundled workflows, scripts, and any available host-native Godot automation tooling.
 
 ## Start
 
-- Verify which Godot automation path is available before planning edits. Prefer any native or mapped Godot tools in the host agent, otherwise use the bundled headless dispatcher directly.
-- Resolve `projectPath` to an absolute project directory.
+- Verify which Godot automation path is available before planning edits. Prefer any native or mapped Godot tools in the host agent. Use the bundled headless dispatcher only for the supported file and scene operations listed below.
+- Resolve `project_path` to an absolute project directory when a host tool requires it.
 - Normalize scene and resource paths to `res://...` when working directly with the bundled Godot scripts in this skill.
 - Inspect unfamiliar projects with any available project-discovery tools, or fall back to reading `project.godot`, scene files, and scripts directly.
+- Require a local `godot` CLI with shell access before using the bundled dispatcher fallback. Prefer Godot 4.4+.
+- Install this skill in a folder named `godot` so the folder name matches `name: godot` in hosts that validate skill naming.
 
 ## Portable CLI Fallback
 
@@ -27,6 +28,7 @@ godot --headless --path /absolute/path/to/project \
 
 - Replace `create_scene` with any supported operation: `create_scene`, `add_node`, `load_sprite`, `save_scene`, `export_mesh_library`, `get_uid`, or `resave_resources`.
 - Pass parameters as a single JSON object using the snake_case field names expected by the bundled GDScript.
+- Do not use the dispatcher for runtime lifecycle actions. It does not implement `run_project`, `get_debug_output`, or `stop_project`.
 
 ## Follow The Main Workflows
 
@@ -40,9 +42,9 @@ godot --headless --path /absolute/path/to/project \
 
 ### Run And Debug
 
-1. Call `run_project` after scene, script, or resource changes.
-2. Poll `get_debug_output` until startup succeeds or the failing script is clear.
-3. Call `stop_project` before relaunching when a prior run is still active.
+1. Use host-native runtime tools such as `run_project`, `get_debug_output`, or `stop_project` only when the host agent exposes them.
+2. If the host does not expose runtime tools, launch Godot outside the dispatcher with a direct CLI command such as `godot --path /absolute/path/to/project`.
+3. Treat runtime launch and log inspection as a separate path from the bundled dispatcher operations.
 
 ### Use The Specialized Operations
 
