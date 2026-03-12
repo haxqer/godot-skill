@@ -1,6 +1,6 @@
 # Godot Skill
 
-Portable Godot project development and debugging skill for Codex-style skill loaders.
+Portable Godot project development, debugging, and export skill for Codex-style skill loaders.
 
 The distributable skill payload lives in [`skill/godot/`](skill/godot/). That folder is kept minimal on purpose so it can be copied directly into a skills directory or packaged for release without GitHub-specific files.
 
@@ -35,5 +35,6 @@ Unzip `dist/godot.zip` into your skills directory. The archive already contains 
 
 - The skill payload itself intentionally excludes a `README.md` so it stays aligned with skill packaging guidance.
 - The bundled dispatcher fallback now supports full scene editing workflows: batch scene transactions, node configuration, `Control` layout and theme overrides, script attachment, signal wiring, and hierarchy refactors in addition to the original skeleton-building helpers.
+- The skill also includes a small export wrapper plus platform guidance for Android, iOS, Web, Windows, and macOS builds driven by existing Godot export presets.
 - The scene editing API is designed against the current stable Godot docs and verified locally on Godot `4.6.1`.
 - The bundled dispatcher fallback requires a local `godot` CLI with shell access.

@@ -1,6 +1,6 @@
 ---
 name: godot
-description: Godot project development and debugging skill for inspecting projects, building and fully configuring scenes, wiring scripts and signals, configuring UI, exporting mesh libraries, and repairing resource UIDs. Use when Codex needs to work inside a Godot project and should follow the bundled Godot workflows; if the host exposes native Godot runtime tools, use them to run the project and inspect debug output.
+description: Godot project development, debugging, and export skill for inspecting projects, building and fully configuring scenes, wiring scripts and signals, configuring UI, exporting mobile (iOS and Android), web, and desktop (Windows and macOS) builds, exporting mesh libraries, and repairing resource UIDs. Use when Codex needs to work inside a Godot project and should follow the bundled Godot workflows; if the host exposes native Godot runtime tools, use them to run the project and inspect debug output.
 ---
 
 # Godot
@@ -13,12 +13,16 @@ Use this skill to inspect and modify Godot projects with the bundled workflows, 
 - Resolve `project_path` to an absolute project directory when a host tool requires it.
 - Normalize scene and resource paths to `res://...` when working directly with the bundled Godot scripts in this skill.
 - Inspect unfamiliar projects with any available project-discovery tools, or fall back to reading `project.godot`, scene files, and scripts directly.
-- Require a local `godot` CLI with shell access before using the bundled dispatcher fallback. The bundled scene editing APIs are designed against the current stable Godot docs and tested on Godot `4.6.1`.
+- Read `export_presets.cfg` before planning export work. Reuse the preset names, bundle identifiers, signing settings, and feature tags that already exist instead of inventing replacements.
+- Require a local `godot` CLI with shell access before using the bundled dispatcher fallback or CLI export wrapper. The bundled scene editing APIs are designed against the current stable Godot docs and tested on Godot `4.6.1`.
+- Read `references/export_targets.md` only when the task involves packaging, signing, or shipping builds for Android, iOS, Web, Windows, or macOS.
 - Install this skill in a folder named `godot` so the folder name matches `name: godot` in hosts that validate skill naming.
 
 ## Portable CLI Fallback
 
-Use this path in shell-capable environments such as Claude Antigravity when dedicated Godot tools are not exposed:
+Use these paths in shell-capable environments such as Claude Antigravity when dedicated Godot tools are not exposed.
+
+### Scene Operations Through The Dispatcher
 
 ```bash
 godot --headless --path /absolute/path/to/project \
@@ -28,7 +32,20 @@ godot --headless --path /absolute/path/to/project \
 
 - Replace `scene_batch` with any supported operation: `scene_batch`, `create_scene`, `add_node`, `instantiate_scene`, `configure_node`, `configure_control`, `attach_script`, `connect_signal`, `disconnect_signal`, `remove_node`, `reparent_node`, `reorder_node`, `load_sprite`, `save_scene`, `export_mesh_library`, `get_uid`, or `resave_resources`.
 - Pass parameters as a single JSON object using the snake_case field names expected by the bundled GDScript.
-- Do not use the dispatcher for runtime lifecycle actions. It does not implement `run_project`, `get_debug_output`, or `stop_project`.
+- Do not use the dispatcher for runtime lifecycle or project export actions. It does not implement `run_project`, `get_debug_output`, `stop_project`, or platform build/export commands.
+
+### Project Export Through The Wrapper
+
+```bash
+python3 /absolute/path/to/skill/scripts/export/export_project.py \
+  /absolute/path/to/project \
+  "Windows Desktop" \
+  /absolute/path/to/build/windows/game.exe
+```
+
+- The wrapper resolves absolute paths, creates the output directory, and shells out to `godot --headless --path ... --export-release ...`.
+- Pass `--mode debug` for smoke builds and `--mode pack` only when the user explicitly asks for a `.pck` style export.
+- Platform support comes from the preset name already defined in `export_presets.cfg`, not from the wrapper itself. Typical preset names are `Android`, `iOS`, `Web`, `Windows Desktop`, and `macOS`.
 
 ## Follow The Main Workflows
 
@@ -45,6 +62,15 @@ godot --headless --path /absolute/path/to/project \
 1. Use host-native runtime tools such as `run_project`, `get_debug_output`, or `stop_project` only when the host agent exposes them.
 2. If the host does not expose runtime tools, launch Godot outside the dispatcher with a direct CLI command such as `godot --path /absolute/path/to/project`.
 3. Treat runtime launch and log inspection as a separate path from the bundled dispatcher operations.
+
+### Prepare And Export Builds
+
+1. Read `export_presets.cfg`, `project.godot`, and any existing CI scripts before editing build settings. Preserve the project's preset names and signing flow whenever possible.
+2. Confirm that the local Godot version matches the project's export templates and that the required platform SDKs or certificates are already configured for the target preset.
+3. Prefer the bundled wrapper at `scripts/export/export_project.py` for repeatable CLI exports, and use `--mode debug` before `--mode release` when you need a quick device, browser, or desktop smoke test.
+4. Keep export outputs outside the project root unless the repository already stores them in a known build directory.
+5. When the user asks for Android, iOS, Web, Windows, or macOS builds, read `references/export_targets.md` for the platform-specific checklist before changing presets or signing settings.
+6. Do not hand-write a large `export_presets.cfg` from scratch unless there is no safer option. It is usually better to patch the existing preset file or create the baseline preset through Godot first.
 
 ### Use The Specialized Operations
 
@@ -121,8 +147,20 @@ godot --headless --path /absolute/path/to/project \
   }'
 ```
 
+### Export A Debug Android Build
+
+```bash
+python3 /absolute/path/to/skill/scripts/export/export_project.py \
+  /absolute/path/to/project \
+  "Android" \
+  /absolute/path/to/build/android/game.apk \
+  --mode debug
+```
+
 ## Check Before You Finish
 
 - Confirm that every write target is inside the intended Godot project.
 - Confirm that the scene still loads and that the project boots after structural edits.
+- Confirm that every exported artifact came from the intended preset and that the artifact path matches the target platform's existing convention.
+- Smoke test at least one exported build for the requested targets instead of assuming the preset is valid.
 - Prefer incremental scene changes over rewriting `.tscn` files manually.
