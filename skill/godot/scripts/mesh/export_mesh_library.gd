@@ -24,6 +24,10 @@ func execute(params: Dictionary) -> void:
         return
         
     var scene_root = scene.instantiate()
+    if not (scene_root is Node):
+        utils_script.log_error("Failed to instantiate scene: " + full_scene_path)
+        return
+
     var mesh_library = MeshLibrary.new()
     
     var mesh_item_names = params.mesh_item_names if params.has("mesh_item_names") else []
@@ -61,6 +65,7 @@ func execute(params: Dictionary) -> void:
             
     var dir = DirAccess.open("res://")
     if dir == null:
+        _cleanup_scene_root(scene_root)
         utils_script.log_error("Failed to open res:// directory")
         return
         
@@ -68,6 +73,7 @@ func execute(params: Dictionary) -> void:
     if output_dir != "res://" and not dir.dir_exists(output_dir.substr(6)):
         var error = dir.make_dir_recursive(output_dir.substr(6))
         if error != OK:
+            _cleanup_scene_root(scene_root)
             utils_script.log_error("Failed to create directory: " + output_dir)
             return
             
@@ -79,3 +85,9 @@ func execute(params: Dictionary) -> void:
             utils_script.log_error("Failed to save MeshLibrary: " + str(error))
     else:
         utils_script.log_error("No valid meshes found in the scene")
+
+    _cleanup_scene_root(scene_root)
+
+func _cleanup_scene_root(scene_root: Node) -> void:
+    if is_instance_valid(scene_root):
+        scene_root.free()

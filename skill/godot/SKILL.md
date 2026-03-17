@@ -79,8 +79,8 @@ python3 /absolute/path/to/skill/scripts/export/export_project.py \
 - Use `attach_script`, `connect_signal`, and `disconnect_signal` to wire scene logic without hand-editing `.tscn` files.
 - Use `remove_node`, `reparent_node`, and `reorder_node` to refactor hierarchy after the scene already exists.
 - Use `export_mesh_library` to build a `MeshLibrary` from a 3D scene for `GridMap`.
-- Use `get_uid` to inspect a resource UID on Godot projects that emit `.uid` sidecar files.
-- Use `resave_resources` or the server's equivalent project-wide UID refresh operation when missing `.uid` files break references.
+- Use `get_uid` to inspect a resource UID sidecar and any engine-reported UID metadata when a project uses `.uid` files.
+- Use `resave_resources` or the server's equivalent project-wide resave operation to attempt `.uid` sidecar regeneration, then verify the reported created and still-missing counts instead of assuming every resave produced a UID.
 
 ## Typed JSON Values
 
@@ -103,7 +103,10 @@ python3 /absolute/path/to/skill/scripts/export/export_project.py \
 - `attach_script`: assign a script and then write exported properties.
 - `connect_signal`: connect a signal to a target node method with persistent connection flags by default and optional `binds`.
 - `disconnect_signal`: remove persistent scene connections by source node, signal, target node, and method.
+- `save_scene`: load an existing scene from `scene_path` and save it back to the same path or an alternate `save_path`; keep `new_path` only as a compatibility alias for older callers.
 - `remove_node`, `reparent_node`, `reorder_node`: mutate existing hierarchy without rewriting the scene by hand.
+- `get_uid`: inspect `file_path`, returning the `.uid` sidecar path, whether that sidecar exists, and any engine-reported UID text when available.
+- `resave_resources`: resave scenes plus `.gd`, `.shader`, and `.gdshader` resources under `project_path`, then report how many `.uid` sidecars were actually created versus still missing.
 
 ## Respect The Bundled Implementation
 

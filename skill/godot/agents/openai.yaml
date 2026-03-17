@@ -1,4 +1,4 @@
 interface:
   display_name: "Godot"
-  short_description: "Build, inspect, export, fully configure, and debug Godot projects"
-  default_prompt: "Use $godot to inspect a Godot project, perform full scene editing with scene_batch or the standalone scene operations, export Android, iOS, Web, Windows, or macOS builds with the bundled wrapper and existing export presets, and use any host-provided Godot runtime tools for debugging."
+  short_description: "Edit scenes, export builds, and repair Godot UIDs"
+  default_prompt: "Use $godot to inspect a Godot project, batch-edit scenes and UI, export builds from existing presets, create mesh libraries, or repair missing UID metadata."

@@ -20,24 +20,33 @@ func execute(params: Dictionary) -> void:
         return
         
     var uid_path = file_path + ".uid"
-    var f = FileAccess.open(uid_path, FileAccess.READ)
-    
-    if f:
-        var uid_content = f.get_as_text()
-        f.close()
-        
-        var result = {
-            "file": file_path,
-            "absolutePath": absolute_path,
-            "uid": uid_content.strip_edges(),
-            "exists": true
-        }
-        print(JSON.stringify(result))
-    else:
-        var result = {
-            "file": file_path,
-            "absolutePath": absolute_path,
-            "exists": false,
-            "message": "UID file does not exist for this file. Use resave_resources to generate UIDs."
-        }
-        print(JSON.stringify(result))
+    var absolute_uid_path = ProjectSettings.globalize_path(uid_path)
+    var sidecar_exists = FileAccess.file_exists(uid_path)
+    var uid_content = ""
+
+    if sidecar_exists:
+        var f = FileAccess.open(uid_path, FileAccess.READ)
+        if f:
+            uid_content = f.get_as_text().strip_edges()
+            f.close()
+
+    var raw_engine_uid = ResourceLoader.get_resource_uid(file_path)
+    var engine_uid = ""
+    if raw_engine_uid != ResourceUID.INVALID_ID:
+        engine_uid = ResourceUID.id_to_text(raw_engine_uid)
+
+    var result = {
+        "file": file_path,
+        "absolutePath": absolute_path,
+        "uidPath": uid_path,
+        "absoluteUidPath": absolute_uid_path,
+        "uid": uid_content,
+        "exists": sidecar_exists,
+        "engineUid": engine_uid,
+        "engineUidExists": not engine_uid.is_empty()
+    }
+
+    if not sidecar_exists:
+        result["message"] = "UID sidecar does not exist for this file. Use resave_resources to attempt regeneration on projects that emit .uid files."
+
+    print(JSON.stringify(result))

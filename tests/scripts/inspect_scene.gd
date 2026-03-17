@@ -112,6 +112,12 @@ func _snapshot_node(node: Node) -> Dictionary:
 
     var script_resource = node.get_script()
     snapshot["script_path"] = script_resource.resource_path if script_resource else ""
+    if node is Sprite2D:
+        var sprite := node as Sprite2D
+        snapshot["texture_path"] = sprite.texture.resource_path if sprite.texture else ""
+    elif node is TextureRect:
+        var texture_rect := node as TextureRect
+        snapshot["texture_path"] = texture_rect.texture.resource_path if texture_rect.texture else ""
 
     for property_name in ["text", "menu_title", "click_count", "screen_id"]:
         if _has_property(node, property_name):

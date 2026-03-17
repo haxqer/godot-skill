@@ -39,23 +39,51 @@ func execute(params: Dictionary) -> void:
             utils_script.log_error("Failed to load: " + scene_path)
             
     var scripts = uid_utils_script.find_files(project_path, ".gd") + uid_utils_script.find_files(project_path, ".shader") + uid_utils_script.find_files(project_path, ".gdshader")
-    var missing_uids = 0
-    var generated_uids = 0
+    var resources_missing_uid_before = 0
+    var uid_regeneration_attempts = 0
+    var uid_sidecars_created = 0
+    var resources_still_missing_uid = 0
     
     for script_path in scripts:
         var uid_path = script_path + ".uid"
-        var f = FileAccess.open(uid_path, FileAccess.READ)
-        
-        if not f:
-            missing_uids += 1
-            var res = load(script_path)
-            if res:
-                var error = ResourceSaver.save(res, script_path)
-                if error == OK:
-                    generated_uids += 1
-                else:
-                    utils_script.log_error("Failed to generate UID for: " + script_path)
-            else:
-                utils_script.log_error("Failed to load resource: " + script_path)
-                
-    utils_script.log_info("Resave operation complete. Scenes: " + str(success_count) + ", UIDs generated: " + str(generated_uids))
+        if FileAccess.file_exists(uid_path):
+            continue
+
+        resources_missing_uid_before += 1
+        var res = load(script_path)
+        if not res:
+            resources_still_missing_uid += 1
+            utils_script.log_error("Failed to load resource: " + script_path)
+            continue
+
+        uid_regeneration_attempts += 1
+        var error = ResourceSaver.save(res, script_path)
+        if error != OK:
+            resources_still_missing_uid += 1
+            utils_script.log_error("Failed to resave resource for UID regeneration: " + script_path)
+            continue
+
+        if FileAccess.file_exists(uid_path):
+            uid_sidecars_created += 1
+        else:
+            resources_still_missing_uid += 1
+
+    var result = {
+        "project_path": project_path,
+        "scenes_resaved": success_count,
+        "scene_errors": error_count,
+        "resources_missing_uid_before": resources_missing_uid_before,
+        "uid_regeneration_attempts": uid_regeneration_attempts,
+        "uid_sidecars_created": uid_sidecars_created,
+        "resources_still_missing_uid": resources_still_missing_uid
+    }
+
+    utils_script.log_info(
+        "Resave operation complete. Scenes: "
+        + str(success_count)
+        + ", UID sidecars created: "
+        + str(uid_sidecars_created)
+        + ", still missing: "
+        + str(resources_still_missing_uid)
+    )
+    print(JSON.stringify(result))

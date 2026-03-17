@@ -18,11 +18,24 @@ cp -R "$skill_root"/. "$stage_root"/
 
 python3 - "$stage_root" "$zip_path" <<'PY'
 import os
+import shutil
 import sys
 import zipfile
 
 stage_root = os.path.abspath(sys.argv[1])
 zip_path = os.path.abspath(sys.argv[2])
+skip_dirs = {"__pycache__", ".git", ".pytest_cache"}
+skip_files = {".DS_Store"}
+skip_suffixes = (".pyc", ".pyo")
+
+for root, dirs, files in os.walk(stage_root):
+    for dir_name in list(dirs):
+        if dir_name in skip_dirs:
+            shutil.rmtree(os.path.join(root, dir_name))
+            dirs.remove(dir_name)
+    for file_name in files:
+        if file_name in skip_files or file_name.endswith(skip_suffixes):
+            os.remove(os.path.join(root, file_name))
 
 with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
     for root, _, files in os.walk(stage_root):

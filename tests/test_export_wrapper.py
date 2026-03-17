@@ -11,13 +11,17 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_ROOT = REPO_ROOT / "tests/fixtures/minimal_project"
 EXPORT_WRAPPER = REPO_ROOT / "skill/godot/scripts/export/export_project.py"
+TEMP_ROOTS: list[Path] = []
 
 
 def main() -> None:
-    test_release_dry_run_uses_release_flag_and_resolves_paths()
-    test_debug_dry_run_uses_debug_flag()
-    test_missing_project_file_fails_cleanly()
-    print("All export wrapper tests passed.")
+    try:
+        test_release_dry_run_uses_release_flag_and_resolves_paths()
+        test_debug_dry_run_uses_debug_flag()
+        test_missing_project_file_fails_cleanly()
+        print("All export wrapper tests passed.")
+    finally:
+        cleanup_temp_roots()
 
 
 def test_release_dry_run_uses_release_flag_and_resolves_paths() -> None:
@@ -88,9 +92,15 @@ def test_missing_project_file_fails_cleanly() -> None:
 
 def copy_fixture_project() -> Path:
     temp_root = Path(tempfile.mkdtemp(prefix="godot-export-wrapper-test-"))
+    TEMP_ROOTS.append(temp_root)
     project_path = temp_root / "project"
     shutil.copytree(FIXTURE_ROOT, project_path)
     return project_path
+
+
+def cleanup_temp_roots() -> None:
+    while TEMP_ROOTS:
+        shutil.rmtree(TEMP_ROOTS.pop(), ignore_errors=True)
 
 
 def run_wrapper(args: list[str]) -> dict:
