@@ -81,6 +81,8 @@ func _delegate_operation(operation: String, params: Dictionary) -> void:
             script_path = local_dir.path_join("../utils/get_uid.gd")
         "resave_resources":
             script_path = local_dir.path_join("../utils/resave_resources.gd")
+        "check_project":
+            script_path = local_dir.path_join("../debug/check_project.gd")
         _:
             utils_script.log_error("Unknown operation: " + operation)
             quit(1)
