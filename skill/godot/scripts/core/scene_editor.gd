@@ -9,6 +9,7 @@ const CONTROL_SIDE_MAP = {
     "right": 2,
     "bottom": 3
 }
+const FRAME_IMAGE_EXTENSIONS = ["png", "webp", "jpg", "jpeg"]
 
 var scene_path := ""
 var scene_root: Node = null
@@ -142,6 +143,8 @@ func dispatch_action(action_type: String, params: Dictionary) -> bool:
             return reorder_node(params)
         "load_sprite":
             return load_sprite(params)
+        "build_sprite_frames":
+            return build_sprite_frames(params)
         _:
             utils_script.log_error("Unsupported scene action: " + action_type)
             return false
@@ -522,6 +525,72 @@ func load_sprite(params: Dictionary) -> bool:
     node.texture = texture
     return true
 
+func build_sprite_frames(params: Dictionary) -> bool:
+    var node = _resolve_node(params.get("node_path", "root"), "node_path")
+    if not node:
+        return false
+    if not (node is AnimatedSprite2D):
+        utils_script.log_error("Node is not an AnimatedSprite2D: " + str(params.get("node_path", "root")))
+        return false
+
+    var animation_name = str(params.get("animation_name", "")).strip_edges()
+    if animation_name.is_empty():
+        utils_script.log_error("build_sprite_frames requires animation_name")
+        return false
+
+    var frame_paths = _collect_frame_paths(params)
+    if frame_paths.is_empty():
+        utils_script.log_error("build_sprite_frames requires at least one valid frame")
+        return false
+
+    var sprite_frames: SpriteFrames = null
+    var existing_frames = (node as AnimatedSprite2D).sprite_frames
+    if existing_frames:
+        var duplicated = existing_frames.duplicate(true)
+        if duplicated is SpriteFrames:
+            sprite_frames = duplicated
+    if sprite_frames == null:
+        sprite_frames = SpriteFrames.new()
+        if sprite_frames.has_animation("default") and animation_name != "default" and sprite_frames.get_frame_count("default") == 0:
+            sprite_frames.remove_animation("default")
+
+    if sprite_frames.has_animation(animation_name):
+        sprite_frames.clear(animation_name)
+    else:
+        sprite_frames.add_animation(animation_name)
+
+    var fps = max(float(params.get("fps", 8.0)), 0.01)
+    sprite_frames.set_animation_speed(animation_name, fps)
+    sprite_frames.set_animation_loop(animation_name, bool(params.get("loop", false)))
+
+    for frame_path in frame_paths:
+        var texture = _load_texture(frame_path, "build_sprite_frames")
+        if not texture:
+            return false
+        sprite_frames.add_frame(animation_name, texture)
+
+    if params.has("resource_save_path"):
+        var resource_save_path = _normalize_res_path(params.get("resource_save_path", ""))
+        if resource_save_path.is_empty():
+            utils_script.log_error("resource_save_path cannot be empty")
+            return false
+        if not _ensure_directory_for_path(resource_save_path):
+            return false
+        var save_error = ResourceSaver.save(sprite_frames, resource_save_path)
+        if save_error != OK:
+            utils_script.log_error("Failed to save SpriteFrames resource: " + str(save_error))
+            return false
+        var reloaded_frames = load(resource_save_path)
+        if not (reloaded_frames is SpriteFrames):
+            utils_script.log_error("Failed to reload SpriteFrames resource: " + resource_save_path)
+            return false
+        sprite_frames = reloaded_frames
+
+    var animated_sprite := node as AnimatedSprite2D
+    animated_sprite.sprite_frames = sprite_frames
+    animated_sprite.animation = StringName(animation_name)
+    return true
+
 func _apply_common_node_configuration(node: Node, params: Dictionary) -> bool:
     if not _apply_properties(node, params.get("properties", {}), false, "properties"):
         return false
@@ -736,6 +805,143 @@ func _load_resource_reference(raw_path: Variant, context: String) -> Variant:
         return null
 
     return resource
+
+func _collect_frame_paths(params: Dictionary) -> Array[String]:
+    if params.has("frame_paths"):
+        var raw_frame_paths = params.get("frame_paths", [])
+        if not (raw_frame_paths is Array):
+            utils_script.log_error("frame_paths must be an array")
+            return []
+
+        var normalized_paths: Array[String] = []
+        for raw_path in raw_frame_paths:
+            var normalized_path = _normalize_res_path(raw_path)
+            if normalized_path.is_empty():
+                utils_script.log_error("frame_paths entries cannot be empty")
+                return []
+            normalized_paths.append(normalized_path)
+        return normalized_paths
+
+    var frames_dir = _normalize_res_path(params.get("frames_dir", ""))
+    if frames_dir.is_empty():
+        utils_script.log_error("build_sprite_frames requires frames_dir or frame_paths")
+        return []
+
+    var directory = DirAccess.open(frames_dir)
+    if directory == null:
+        utils_script.log_error("Failed to open frames_dir: " + frames_dir)
+        return []
+
+    var frame_paths: Array[String] = []
+    for file_name in directory.get_files():
+        var extension = file_name.get_extension().to_lower()
+        if extension in FRAME_IMAGE_EXTENSIONS:
+            frame_paths.append(frames_dir.path_join(file_name))
+    frame_paths.sort_custom(func(a: String, b: String) -> bool:
+        return _natural_path_less(a, b)
+    )
+    return frame_paths
+
+func _load_texture(raw_path: String, context: String) -> Texture2D:
+    var texture_path = _normalize_res_path(raw_path)
+    if texture_path.is_empty():
+        utils_script.log_error("Empty texture path for " + context)
+        return null
+
+    var resource = load(texture_path)
+    if resource is Texture2D:
+        return resource
+
+    var absolute_path = ProjectSettings.globalize_path(texture_path)
+    if not FileAccess.file_exists(absolute_path):
+        utils_script.log_error("Texture file does not exist: " + texture_path)
+        return null
+
+    var image = Image.load_from_file(absolute_path)
+    if image == null or image.is_empty():
+        utils_script.log_error("Failed to load image data for texture: " + texture_path)
+        return null
+
+    var image_texture = ImageTexture.create_from_image(image)
+    image_texture.take_over_path(texture_path)
+    return image_texture
+
+func _natural_path_less(left_path: String, right_path: String) -> bool:
+    var left_name = left_path.get_file()
+    var right_name = right_path.get_file()
+    var comparison = _compare_natural_strings(left_name, right_name)
+    if comparison == 0:
+        return left_path.to_lower() < right_path.to_lower()
+    return comparison < 0
+
+func _compare_natural_strings(left_value: String, right_value: String) -> int:
+    var left_parts = _split_natural_parts(left_value.to_lower())
+    var right_parts = _split_natural_parts(right_value.to_lower())
+    var part_count = min(left_parts.size(), right_parts.size())
+
+    for index in range(part_count):
+        var left_part = left_parts[index]
+        var right_part = right_parts[index]
+        var left_is_digit = bool(left_part["is_digit"])
+        var right_is_digit = bool(right_part["is_digit"])
+        if left_is_digit and right_is_digit:
+            var left_number = int(left_part["value"])
+            var right_number = int(right_part["value"])
+            if left_number != right_number:
+                return -1 if left_number < right_number else 1
+            var left_width = int(left_part["width"])
+            var right_width = int(right_part["width"])
+            if left_width != right_width:
+                return -1 if left_width < right_width else 1
+            continue
+        if left_is_digit != right_is_digit:
+            return -1 if left_is_digit else 1
+
+        var left_text = str(left_part["value"])
+        var right_text = str(right_part["value"])
+        if left_text != right_text:
+            return -1 if left_text < right_text else 1
+
+    if left_parts.size() == right_parts.size():
+        return 0
+    return -1 if left_parts.size() < right_parts.size() else 1
+
+func _split_natural_parts(value: String) -> Array:
+    var parts: Array = []
+    var current = ""
+    var current_is_digit = false
+    var has_current = false
+
+    for index in range(value.length()):
+        var character = value.substr(index, 1)
+        var is_digit = character >= "0" and character <= "9"
+        if not has_current:
+            current = character
+            current_is_digit = is_digit
+            has_current = true
+        elif is_digit == current_is_digit:
+            current += character
+        else:
+            parts.append(_make_natural_part(current, current_is_digit))
+            current = character
+            current_is_digit = is_digit
+
+    if has_current:
+        parts.append(_make_natural_part(current, current_is_digit))
+    return parts
+
+func _make_natural_part(raw_value: String, is_digit: bool) -> Dictionary:
+    if is_digit:
+        return {
+            "is_digit": true,
+            "value": int(raw_value),
+            "width": raw_value.length()
+        }
+    return {
+        "is_digit": false,
+        "value": raw_value,
+        "width": raw_value.length()
+    }
 
 func _resolve_node(path_value: Variant, label: String) -> Node:
     if not is_instance_valid(scene_root):

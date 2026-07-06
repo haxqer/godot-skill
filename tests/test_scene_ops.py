@@ -27,6 +27,7 @@ def main() -> None:
         test_save_scene_copy()
         test_save_scene_legacy_new_path_alias()
         test_load_sprite_with_generated_texture()
+        test_build_sprite_frames_from_frame_list()
         test_export_mesh_library_from_generated_scene()
         test_get_uid_reads_existing_sidecar()
         test_get_uid_reports_missing_sidecar_cleanly()
@@ -356,6 +357,60 @@ def test_load_sprite_with_generated_texture() -> None:
     root = snapshot["nodes"]["root"]
     assert root["type"] == "Sprite2D"
     assert root["texture_path"] == "res://textures/test_gradient.tres"
+
+
+def test_build_sprite_frames_from_frame_list() -> None:
+    project_path = copy_fixture_project()
+    # Generate two frame textures (the throwaway sprite scenes are ignored).
+    prepare_test_assets(
+        project_path,
+        {
+            "action": "create_sprite_fixture",
+            "scene_path": "scenes/_frame0_src.tscn",
+            "texture_path": "frames/frame_00.tres",
+        },
+    )
+    prepare_test_assets(
+        project_path,
+        {
+            "action": "create_sprite_fixture",
+            "scene_path": "scenes/_frame1_src.tscn",
+            "texture_path": "frames/frame_01.tres",
+        },
+    )
+    run_dispatcher(
+        project_path,
+        "create_scene",
+        {
+            "scene_path": "scenes/animated.tscn",
+            "root_node_type": "AnimatedSprite2D",
+            "root_node_name": "root",
+        },
+    )
+    run_dispatcher(
+        project_path,
+        "build_sprite_frames",
+        {
+            "scene_path": "scenes/animated.tscn",
+            "node_path": "root",
+            "animation_name": "walk",
+            "frame_paths": ["frames/frame_00.tres", "frames/frame_01.tres"],
+            "fps": 10,
+            "loop": True,
+            "resource_save_path": "animations/walk_frames.tres",
+        },
+    )
+
+    snapshot = inspect_scene(project_path, "scenes/animated.tscn")
+    root = snapshot["nodes"]["root"]
+    assert root["type"] == "AnimatedSprite2D"
+    assert root["current_animation"] == "walk"
+    assert root["sprite_frames_path"] == "res://animations/walk_frames.tres"
+    walk = root["animations"]["walk"]
+    assert walk["frame_count"] == 2
+    assert walk["loop"] is True
+    assert math.isclose(walk["speed"], 10.0, rel_tol=1e-6, abs_tol=1e-6)
+    assert (project_path / "animations/walk_frames.tres").is_file()
 
 
 def test_export_mesh_library_from_generated_scene() -> None:

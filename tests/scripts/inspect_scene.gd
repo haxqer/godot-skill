@@ -118,6 +118,20 @@ func _snapshot_node(node: Node) -> Dictionary:
     elif node is TextureRect:
         var texture_rect := node as TextureRect
         snapshot["texture_path"] = texture_rect.texture.resource_path if texture_rect.texture else ""
+    elif node is AnimatedSprite2D:
+        var animated := node as AnimatedSprite2D
+        var animations := {}
+        var frames := animated.sprite_frames
+        if frames:
+            for animation_name in frames.get_animation_names():
+                animations[str(animation_name)] = {
+                    "frame_count": frames.get_frame_count(animation_name),
+                    "speed": frames.get_animation_speed(animation_name),
+                    "loop": frames.get_animation_loop(animation_name)
+                }
+        snapshot["animations"] = animations
+        snapshot["current_animation"] = str(animated.animation)
+        snapshot["sprite_frames_path"] = frames.resource_path if frames else ""
 
     for property_name in ["text", "menu_title", "click_count", "screen_id"]:
         if _has_property(node, property_name):

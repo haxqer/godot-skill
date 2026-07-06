@@ -73,6 +73,8 @@ func _delegate_operation(operation: String, params: Dictionary) -> void:
             script_path = local_dir.path_join("../scene/reorder_node.gd")
         "load_sprite":
             script_path = local_dir.path_join("../scene/load_sprite.gd")
+        "build_sprite_frames":
+            script_path = local_dir.path_join("../scene/build_sprite_frames.gd")
         "save_scene":
             script_path = local_dir.path_join("../scene/save_scene.gd")
         "export_mesh_library":
