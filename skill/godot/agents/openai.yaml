@@ -1,4 +1,4 @@
 interface:
   display_name: "Godot"
-  short_description: "Edit scenes, integrate art plus project-native music/story content and frame animations, run and fix runtime debugger errors, validate runtime changes, export Godot 4.7 builds, and repair Godot UIDs"
-  default_prompt: "Use $godot to inspect a Godot project, batch-edit scenes and UI, design or refactor modular feature architecture when needed, keep scene scripts thin, separate controller or system or model responsibilities, add art, integrate provided or separately generated music and story content through the project's existing flows, default to a pixel-art direction when the user does not specify a style and the project has no established one, prefer transparent generated sprite assets and fall back to a pure-green chroma-key cutout workflow when needed, write repaired frames back into the project before building AnimatedSprite2D animations, run the game to validate implemented features and capture and fix the debugger's runtime errors, validate that scripts and scenes compile and load, export builds from existing presets, create mesh libraries, or repair missing UID metadata."
+  short_description: "Inspect, edit, validate, test, and export Godot projects"
+  default_prompt: "Use $godot to inspect, modify, validate, exercise, and export this Godot project with the bundled structured workflows."

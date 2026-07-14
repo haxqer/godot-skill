@@ -1,6 +1,6 @@
 ---
 name: godot
-description: Godot project development, debugging, runtime validation, architecture design, creative content integration, animation integration, and export skill for inspecting projects, building and fully configuring scenes, wiring scripts and signals, configuring UI, designing or refactoring modular Controller or System or Model style feature boundaries, adding art, integrating provided or separately generated music and story content through project-native flows, integrating frame animations, running projects to capture and fix runtime debugger errors, validating scripts and scenes, exporting mobile (iOS and Android), web, and desktop (Windows and macOS) builds, exporting mesh libraries, and repairing resource UIDs. Designed for Godot 4.7 and compatible with Godot 4.x. Use when Codex needs to work inside a Godot project and should follow the bundled Godot workflows; if the host exposes native Godot runtime tools, use them to run the project, validate implemented features, capture the debugger's errors, and fix them.
+description: Godot project development, inspection, structured resource and project-setting editing, tileset and tilemap authoring, spritesheet and keyframe animation, audio bus routing, import auditing, debugging, unit-test running, deterministic input and screenshot scenarios, runtime and performance validation, architecture design, creative content integration, and export preparation. Use when Codex needs to inspect or modify Godot projects, build scenes and UI, wire scripts and signals, paint TileMapLayer levels, build AnimationPlayer clips or SpriteFrames atlases, set up audio buses, edit InputMap or autoloads, run GUT/GdUnit4 tests, validate GDScript/C#/GDExtension/editor plugins, test gameplay flows, add project-native art/music/story content, export mobile/web/desktop/server/visionOS builds, create mesh libraries, or repair resource UIDs. Designed for Godot 4.7 and compatible with Godot 4.x; prefer host-native Godot tools when exposed and use the bundled portable workflows otherwise.
 ---
 
 # Godot
@@ -22,6 +22,11 @@ Use this skill to inspect and modify Godot projects with the bundled workflows, 
 - Require a local `godot` CLI with shell access before using the bundled dispatcher fallback, runtime runner, or CLI export wrapper. The bundled APIs are designed against the current stable Godot docs and verified on Godot `4.7` (compatible with Godot 4.x).
 - Read `references/export_targets.md` only when the task involves packaging, signing, or shipping builds for Android, iOS, Web, Windows, or macOS.
 - Read `references/debugging.md` when the task involves running the project, reading the Godot debugger's errors, and fixing them.
+- Read `references/automation_api.md` when using inspection, `resource_batch`, `project_batch`, tileset/tilemap/animation/audio-bus authoring, unit-test running, import audit, scenario, environment probe, validation, or export preflight APIs.
+- Read `references/vfx_2d.md` when the task involves 2D lighting, particles, parallax, trails, paths, or tile-based levels — it also lists the 4.3+ node deprecations (`TileMap` → `TileMapLayer`, `ParallaxBackground` → `Parallax2D`).
+- Read `references/tween.md` when adding code-driven juice (punches, fades, shakes); Tweens are runtime-only and ship inside scripts via `attach_script`.
+- Read `references/localization.md` when translating game text or wiring translation files (note: POT template generation is editor-only in Godot 4.x).
+- Read `references/ci.md` when setting up automated test or export pipelines.
 - Install this skill in a folder named `godot` so the folder name matches `name: godot` in hosts that validate skill naming.
 
 ## Godot 4.7 Notes
@@ -42,7 +47,8 @@ godot --headless --path /absolute/path/to/project \
   scene_batch '{"scene_path":"scenes/main.tscn","create_if_missing":true,"root_node_type":"Node2D","actions":[{"type":"add_node","node_type":"Camera2D","node_name":"Camera"}]}'
 ```
 
-- Replace `scene_batch` with any supported operation: `scene_batch`, `create_scene`, `add_node`, `instantiate_scene`, `configure_node`, `configure_control`, `attach_script`, `connect_signal`, `disconnect_signal`, `remove_node`, `reparent_node`, `reorder_node`, `load_sprite`, `build_sprite_frames`, `save_scene`, `export_mesh_library`, `get_uid`, `resave_resources`, or `check_project`.
+- Replace `scene_batch` with any supported operation: `inspect_project`, `inspect_scene`, `inspect_resource`, `resource_batch`, `project_batch`, `audit_imports`, `set_import_options`, `build_tileset`, `paint_tilemap`, `build_animation`, `build_animation_tree`, `setup_audio_buses`, `scene_batch`, `create_scene`, `add_node`, `instantiate_scene`, `configure_node`, `configure_control`, `attach_script`, `connect_signal`, `disconnect_signal`, `remove_node`, `reparent_node`, `reorder_node`, `load_sprite`, `build_sprite_frames`, `save_scene`, `export_mesh_library`, `get_uid`, `resave_resources`, or `check_project`.
+- Every dispatcher operation exits `0` on success and `1` after any logged error, so shell callers can gate on the exit code.
 - Pass parameters as a single JSON object using the snake_case field names expected by the bundled GDScript.
 - The dispatcher covers file, scene, and static-validation operations. It does not run gameplay or export builds: use the runtime runner (`scripts/debug/run_project.py`) to run and capture debugger errors, and the export wrapper (`scripts/export/export_project.py`) for builds.
 
@@ -67,8 +73,20 @@ godot --headless --path /absolute/path/to/project \
   | python3 /absolute/path/to/godot/scripts/debug/godot_log_parser.py -
 ```
 
-- `check_project` statically loads every script, scene, shader, and resource (or just a `{"project_path":"subdir"}` subtree) and prints a JSON summary of which files fail to compile or load. Piping its combined output through `godot_log_parser.py` yields line-level parse-error diagnostics.
+- `check_project` statically loads every GDScript, scene, shader, resource, GDExtension, and editor plugin (or just a `{"project_path":"subdir"}` subtree) and prints a JSON summary of failures. Piping its combined output through `godot_log_parser.py` yields line-level parse-error diagnostics.
+- Run `python3 scripts/debug/validate_project.py /absolute/project --pretty` for the comprehensive pass, including C# solution builds when a `.csproj` exists.
 - Use `godot_log_parser.py` on its own to structure any Godot log you already have: `python3 /absolute/path/to/godot/scripts/debug/godot_log_parser.py path/to/run.log`.
+
+### Probe And Run Deterministic Scenarios
+
+```bash
+python3 /absolute/path/to/godot/scripts/debug/probe_environment.py /absolute/project --pretty
+python3 /absolute/path/to/godot/scripts/debug/run_scenario.py /absolute/project scenario.json --pretty
+```
+
+- Use the environment probe before platform or native-code work to report the Godot version, CLI capabilities, export templates, host tools, and project languages/extensions/plugins.
+- Use `run_scenario.py` for action/key/mouse/joypad input, NodePath property assertions, log assertions, Viewport PNG capture, and performance thresholds. It selects rendered mode automatically when screenshots are present and stays headless otherwise.
+- Read `references/automation_api.md` for the scenario and assertion schema.
 
 ### Project Export Through The Wrapper
 
@@ -80,8 +98,9 @@ python3 /absolute/path/to/godot/scripts/export/export_project.py \
 ```
 
 - The wrapper resolves absolute paths, creates the output directory, and shells out to `godot --headless --path ... --export-release ...`.
-- Pass `--mode debug` for smoke builds and `--mode pack` only when the user explicitly asks for a `.pck` style export.
-- Platform support comes from the preset name already defined in `export_presets.cfg`, not from the wrapper itself. Typical preset names are `Android`, `iOS`, `Web`, `Windows Desktop`, and `macOS`.
+- Run with `--preflight-only` before changing or executing a preset. Real exports preflight by default; use `--skip-preflight` only after independently verifying the environment.
+- Pass `--mode debug` for smoke builds, `--mode pack` for a `.pck`/ZIP data export, or `--mode patch --patches base.pck` for a changed-files patch.
+- Platform support comes from the preset name already defined in `export_presets.cfg`. Common platforms include Android, iOS, Web, Windows Desktop, Linux, macOS, dedicated server presets, and visionOS.
 
 ## Follow The Main Workflows
 
@@ -133,7 +152,7 @@ python3 /absolute/path/to/godot/scripts/export/export_project.py \
 2. Confirm that the local Godot version matches the project's export templates and that the required platform SDKs or certificates are already configured for the target preset.
 3. Prefer the bundled wrapper at `scripts/export/export_project.py` for repeatable CLI exports, and use `--mode debug` before `--mode release` when you need a quick device, browser, or desktop smoke test.
 4. Keep export outputs outside the project root unless the repository already stores them in a known build directory.
-5. When the user asks for Android, iOS, Web, Windows, or macOS builds, read `references/export_targets.md` for the platform-specific checklist before changing presets or signing settings.
+5. When the user asks for Android, iOS, Web, Windows, Linux, macOS, dedicated server, or visionOS builds, read `references/export_targets.md` for the platform-specific checklist before changing presets or signing settings.
 6. Do not hand-write a large `export_presets.cfg` from scratch unless there is no safer option. It is usually better to patch the existing preset file or create the baseline preset through Godot first.
 
 ### Use The Specialized Operations
@@ -147,16 +166,29 @@ python3 /absolute/path/to/godot/scripts/export/export_project.py \
 - Use `get_uid` to inspect a resource UID sidecar and any engine-reported UID metadata when a project uses `.uid` files.
 - Use `resave_resources` or the server's equivalent project-wide resave operation to attempt `.uid` sidecar regeneration, then verify the reported created and still-missing counts instead of assuming every resave produced a UID.
 - Use `run_project.py` to run the project and capture the debugger's runtime errors as structured diagnostics, and `check_project` to statically validate that every script, scene, shader, and resource compiles and loads.
+- Use `inspect_project`, `inspect_scene`, and `inspect_resource` before editing unfamiliar projects; request full file lists or property schemas only when needed.
+- Use `resource_batch` for transactional Resource creation, duplication, property/indexed-property updates, metadata, builder-method calls (`call_method` for APIs like `Gradient.add_point`, `Theme.set_color`, `Animation.add_track`, `TileSet.add_source`), and save.
+- Use `project_batch` for structured ProjectSettings, InputMap, autoload, layer-name, main-scene, and translation edits.
+- Use `audit_imports` or `scripts/import/import_project.py` to detect missing, invalid, stale, and orphaned import artifacts and optionally reimport first.
+- Use `validate_project.py` for GDScript/C#/GDExtension/plugin validation, and `run_scenario.py` for deterministic behavior, screenshot, log, and performance checks.
+- Use `build_tileset` to author a `TileSet` (atlas sources, exposed tiles, per-tile collision/custom-data/terrains via `tile_defaults`) and `paint_tilemap` to assign it and paint/fill/erase cells or run `terrain_fills` autotiling on a `TileMapLayer`. Tiles without collision polygons are decorative — pass `"collision": "full_cell"` for solid ground.
+- Use `build_animation_tree` for AnimationPlayer-backed state machines (states, transitions, auto Start wiring), and `set_import_options` to patch `.import` params such as audio loop modes before a reimport.
+- Use `build_sprite_frames` with `spritesheet` + `grid` + `animations` to slice an atlas into multiple named animations with per-frame durations; the legacy one-file-per-frame form still works.
+- Use `build_animation` for AnimationPlayer keyframe clips (value/method/bezier tracks) saved standalone and/or attached through an `AnimationLibrary`.
+- Use `setup_audio_buses` to create the Master/Music/SFX routing, save the `AudioBusLayout`, and register it in project settings.
+- Use `scripts/test/run_tests.py` to run a project's GUT or GdUnit4 suite headlessly with normalized exit codes; Godot has no built-in project test runner.
 
 ## Typed JSON Values
 
 - Use plain JSON scalars, arrays, and objects for ordinary values.
 - Use `{"__resource":"res://path/to/resource"}` to load a Godot resource before assignment.
+- Use `{"__resource_type":"InputEventKey","properties":{"physical_keycode":32}}` to instantiate and configure a Resource value.
 - Use typed wrappers for engine value types when the target property is not plain JSON:
   - `{"__type":"Vector2","x":10,"y":20}`
   - `{"__type":"Color","r":1,"g":0.5,"b":0.25,"a":1}`
   - `{"__type":"NodePath","value":"root/Button"}`
 - `configure_node.properties`, `configure_node.indexed_properties`, `attach_script.script_properties`, `configure_control.theme_overrides`, and `scene_batch.actions[*]` all accept the same typed-value format.
+- The shared codec also supports Rect/Transform/Plane/Quaternion/AABB/Basis/Projection and packed array values. Read `references/automation_api.md` for the complete surface.
 
 ## Scene Editing Surface
 
@@ -170,17 +202,21 @@ python3 /absolute/path/to/godot/scripts/export/export_project.py \
 - `connect_signal`: connect a signal to a target node method with persistent connection flags by default and optional `binds`.
 - `disconnect_signal`: remove persistent scene connections by source node, signal, target node, and method.
 - `load_sprite`: load an existing texture resource into a `Sprite2D`, `Sprite3D`, or `TextureRect`.
-- `build_sprite_frames`: build or replace an animation on an `AnimatedSprite2D` from `frames_dir` or `frame_paths`, then optionally save the `SpriteFrames` resource to `resource_save_path`.
+- `build_sprite_frames`: build or replace animations on an `AnimatedSprite2D` from `frames_dir`/`frame_paths`, or from a `spritesheet` + `grid` with an `animations` array (multiple named animations, per-frame `duration`), then optionally save the `SpriteFrames` resource to `resource_save_path`.
+- `paint_tilemap`: assign a `TileSet` and paint/fill/erase cells on a `TileMapLayer` node (also available inside `scene_batch`).
+- `build_animation`: build an `Animation` from declarative value/method/bezier tracks, save it standalone, and/or register it on an `AnimationPlayer` via an `AnimationLibrary`.
+- `build_tileset`: author a `TileSet` resource with atlas sources, exposed tiles, and physics/custom-data layers.
+- `setup_audio_buses`: author the project's `AudioBusLayout` (buses, sends, volumes, effects) and register it in project settings.
 - `save_scene`: load an existing scene from `scene_path` and save it back to the same path or an alternate `save_path`; keep `new_path` only as a compatibility alias for older callers.
 - `remove_node`, `reparent_node`, `reorder_node`: mutate existing hierarchy without rewriting the scene by hand.
 - `get_uid`: inspect `file_path`, returning the `.uid` sidecar path, whether that sidecar exists, and any engine-reported UID text when available.
 - `resave_resources`: resave scenes plus `.gd`, `.shader`, and `.gdshader` resources under `project_path`, then report how many `.uid` sidecars were actually created versus still missing.
-- `check_project`: statically load every script, scene, shader, and resource under `project_path` (default `res://`) and report the checked count plus a `failed` list with each file's `path`, `kind`, and `reason`.
+- `check_project`: statically load every GDScript, scene, shader, resource, GDExtension, and editor plugin under `project_path` (default `res://`) and report failures by path, kind, and reason.
 
 ## Respect The Bundled Implementation
 
 - Read `scripts/core/dispatcher.gd` when adding or changing Godot-side operations.
-- Add scene operations under `scripts/scene/`, asset helpers under `scripts/assets/`, mesh operations under `scripts/mesh/`, diagnostics and the runtime runner/parser under `scripts/debug/`, shared utilities under `scripts/utils/`, and shared scene editing helpers under `scripts/core/`.
+- Add scene operations under `scripts/scene/`, resource operations under `scripts/resource/`, project operations under `scripts/project/`, import helpers under `scripts/import/`, asset helpers under `scripts/assets/`, mesh operations under `scripts/mesh/`, diagnostics/runners under `scripts/debug/`, shared utilities under `scripts/utils/`, and codecs/editing helpers under `scripts/core/`.
 - Keep Godot-side parameter names in snake_case when editing these scripts, for example `scene_path`, `root_node_type`, `parent_node_path`, `node_type`, and `node_name`.
 - Preserve the current relative import pattern inside the GDScript files so the headless dispatcher keeps working.
 

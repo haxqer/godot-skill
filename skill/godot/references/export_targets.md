@@ -44,6 +44,30 @@ Use this reference only when the user asks to package, export, sign, or ship a G
 - Confirm bundle identifier, entitlements, icon, hardened runtime, and notarization steps before calling the export complete.
 - Treat non-macOS smoke exports as provisional until the app boots on macOS and passes signing and notarization.
 
+## Linux
+
+- Reuse the existing `Linux` or `Linux/X11` preset and preserve its architecture and texture-compression choices.
+- The common artifact is an `.x86_64` executable, often distributed with a PCK or archive.
+- Validate native GDExtension libraries for the target architecture on a real Linux host or CI runner.
+
+## Dedicated Server
+
+- Prefer a dedicated server preset derived from the project's desktop target, with rendering disabled and the `dedicated_server` feature tag enabled.
+- Keep server-only secrets and deployment configuration outside exported project data.
+- Smoke test startup, port binding, shutdown signals, and headless scene paths on the deployment OS.
+
+## visionOS
+
+- Treat visionOS as a macOS/Xcode export path with Apple signing, bundle IDs, capabilities, and device/simulator architecture requirements.
+- Reuse an existing visionOS preset and Xcode workflow; do not infer signing assets from iOS settings.
+- Validate immersive/window presentation and input on a simulator or device before calling the build complete.
+
+## Preflight And Patches
+
+- Run `scripts/export/export_project.py PROJECT PRESET OUTPUT --preflight-only` before exporting.
+- Use `--mode patch --patches base.pck [previous_patch.pck ...]` only when a base artifact from the same compatible project/preset is available.
+- Treat preflight output-extension warnings as review items; preset configuration and platform signing remain authoritative.
+
 ## Feature Tags To Audit
 
 - Mobile and desktop tags: `android`, `ios`, `mobile`, `windows`, `macos`, `pc`

@@ -2,6 +2,7 @@ class_name GodotSkillSceneEditor
 extends RefCounted
 
 var utils_script = preload("./utils.gd")
+var variant_codec = preload("./variant_codec.gd").new()
 
 const CONTROL_SIDE_MAP = {
     "left": 0,
@@ -145,6 +146,8 @@ func dispatch_action(action_type: String, params: Dictionary) -> bool:
             return load_sprite(params)
         "build_sprite_frames":
             return build_sprite_frames(params)
+        "paint_tilemap":
+            return paint_tilemap(params)
         _:
             utils_script.log_error("Unsupported scene action: " + action_type)
             return false
@@ -198,7 +201,10 @@ func instantiate_scene(params: Dictionary) -> bool:
         instance_root.name = str(params.get("node_name"))
 
     _insert_child(parent, instance_root, int(params.get("index", -1)))
-    _set_owner_recursive(instance_root, scene_root)
+    # Only the instance ROOT is owned by the editing scene. Recursively
+    # re-owning the instance's internal children would serialize duplicates of
+    # them into the parent scene alongside the instanced scene itself.
+    instance_root.owner = scene_root
 
     if params.has("unique_name_in_owner"):
         instance_root.set_unique_name_in_owner(bool(params.get("unique_name_in_owner")))
@@ -533,9 +539,12 @@ func build_sprite_frames(params: Dictionary) -> bool:
         utils_script.log_error("Node is not an AnimatedSprite2D: " + str(params.get("node_path", "root")))
         return false
 
+    if params.has("animations"):
+        return _build_sprite_frames_multi(node as AnimatedSprite2D, params)
+
     var animation_name = str(params.get("animation_name", "")).strip_edges()
     if animation_name.is_empty():
-        utils_script.log_error("build_sprite_frames requires animation_name")
+        utils_script.log_error("build_sprite_frames requires animation_name or animations")
         return false
 
     var frame_paths = _collect_frame_paths(params)
@@ -543,25 +552,8 @@ func build_sprite_frames(params: Dictionary) -> bool:
         utils_script.log_error("build_sprite_frames requires at least one valid frame")
         return false
 
-    var sprite_frames: SpriteFrames = null
-    var existing_frames = (node as AnimatedSprite2D).sprite_frames
-    if existing_frames:
-        var duplicated = existing_frames.duplicate(true)
-        if duplicated is SpriteFrames:
-            sprite_frames = duplicated
-    if sprite_frames == null:
-        sprite_frames = SpriteFrames.new()
-        if sprite_frames.has_animation("default") and animation_name != "default" and sprite_frames.get_frame_count("default") == 0:
-            sprite_frames.remove_animation("default")
-
-    if sprite_frames.has_animation(animation_name):
-        sprite_frames.clear(animation_name)
-    else:
-        sprite_frames.add_animation(animation_name)
-
-    var fps = max(float(params.get("fps", 8.0)), 0.01)
-    sprite_frames.set_animation_speed(animation_name, fps)
-    sprite_frames.set_animation_loop(animation_name, bool(params.get("loop", false)))
+    var sprite_frames := _prepare_sprite_frames(node as AnimatedSprite2D, animation_name)
+    _reset_animation(sprite_frames, animation_name, params)
 
     for frame_path in frame_paths:
         var texture = _load_texture(frame_path, "build_sprite_frames")
@@ -569,6 +561,178 @@ func build_sprite_frames(params: Dictionary) -> bool:
             return false
         sprite_frames.add_frame(animation_name, texture)
 
+    return _finalize_sprite_frames(node as AnimatedSprite2D, sprite_frames, params, animation_name)
+
+func _build_sprite_frames_multi(node: AnimatedSprite2D, params: Dictionary) -> bool:
+    var animations = params.get("animations", [])
+    if not (animations is Array) or animations.is_empty():
+        utils_script.log_error("build_sprite_frames.animations must be a non-empty array")
+        return false
+
+    var sheet_texture: Texture2D = null
+    if params.has("spritesheet"):
+        sheet_texture = _load_texture(str(params.get("spritesheet", "")), "build_sprite_frames.spritesheet")
+        if not sheet_texture:
+            return false
+
+    var grid = params.get("grid", {})
+    if not (grid is Dictionary):
+        utils_script.log_error("build_sprite_frames.grid must be a dictionary")
+        return false
+    if not grid.is_empty() and (int(grid.get("cell_width", 0)) <= 0 or int(grid.get("cell_height", 0)) <= 0):
+        utils_script.log_error("build_sprite_frames.grid requires positive cell_width and cell_height")
+        return false
+
+    var first_name := ""
+    var sprite_frames: SpriteFrames = null
+    for raw_animation in animations:
+        if not (raw_animation is Dictionary):
+            utils_script.log_error("build_sprite_frames.animations entries must be dictionaries")
+            return false
+        var animation = raw_animation as Dictionary
+        var animation_name = str(animation.get("name", "")).strip_edges()
+        if animation_name.is_empty():
+            utils_script.log_error("build_sprite_frames.animations entries require name")
+            return false
+        if first_name.is_empty():
+            first_name = animation_name
+            sprite_frames = _prepare_sprite_frames(node, animation_name)
+        _reset_animation(sprite_frames, animation_name, animation)
+
+        var frame_specs = animation.get("frames", [])
+        if not (frame_specs is Array) or frame_specs.is_empty():
+            utils_script.log_error("Animation '%s' requires a non-empty frames array" % animation_name)
+            return false
+        for raw_spec in frame_specs:
+            if not (raw_spec is Dictionary):
+                utils_script.log_error("Frame specs must be dictionaries in animation: " + animation_name)
+                return false
+            if not _append_frames_from_spec(sprite_frames, animation_name, raw_spec, sheet_texture, grid):
+                return false
+
+    return _finalize_sprite_frames(node, sprite_frames, params, first_name)
+
+func _append_frames_from_spec(sprite_frames: SpriteFrames, animation_name: String, spec: Dictionary, sheet: Texture2D, grid: Dictionary) -> bool:
+    var duration = max(float(spec.get("duration", 1.0)), 0.01)
+
+    if spec.has("path"):
+        var texture = _load_texture(str(spec.get("path", "")), "frames.path")
+        if not texture:
+            return false
+        sprite_frames.add_frame(animation_name, texture, duration)
+        return true
+
+    if spec.has("region"):
+        var region_texture := _make_atlas_frame(sheet, spec.get("region"), "frames.region")
+        if not region_texture:
+            return false
+        sprite_frames.add_frame(animation_name, region_texture, duration)
+        return true
+
+    if grid.is_empty() or sheet == null:
+        utils_script.log_error("Grid frame specs require spritesheet and grid on animation: " + animation_name)
+        return false
+
+    var columns := _grid_columns(sheet, grid)
+    if columns <= 0:
+        return false
+
+    var cells: Array[Vector2i] = []
+    if spec.has("index"):
+        var index = int(spec.get("index", 0))
+        cells.append(Vector2i(index % columns, int(index / float(columns))))
+    elif spec.has("row") and spec.has("cols"):
+        var row = int(spec.get("row", 0))
+        var cols = spec.get("cols")
+        if not (cols is Array) or cols.is_empty():
+            utils_script.log_error("frames.cols must be a non-empty array")
+            return false
+        for col in cols:
+            cells.append(Vector2i(int(col), row))
+    elif spec.has("row") and spec.has("col"):
+        cells.append(Vector2i(int(spec.get("col", 0)), int(spec.get("row", 0))))
+    else:
+        utils_script.log_error("Frame spec needs path, region, index, or row/col in animation: " + animation_name)
+        return false
+
+    for cell in cells:
+        var atlas := _make_atlas_frame(sheet, _grid_cell_region(cell, grid), "frames.cell")
+        if not atlas:
+            return false
+        sprite_frames.add_frame(animation_name, atlas, duration)
+    return true
+
+func _grid_columns(sheet: Texture2D, grid: Dictionary) -> int:
+    var cell_width = int(grid.get("cell_width", 0))
+    var separation_x = int(grid.get("separation_x", 0))
+    var margin_x = int(grid.get("margin_x", 0))
+    var usable = sheet.get_width() - margin_x + separation_x
+    var columns = int(usable / float(cell_width + separation_x)) if cell_width + separation_x > 0 else 0
+    if columns <= 0:
+        utils_script.log_error("Spritesheet is narrower than one grid cell")
+    return columns
+
+func _grid_cell_region(cell: Vector2i, grid: Dictionary) -> Dictionary:
+    var cell_width = int(grid.get("cell_width", 0))
+    var cell_height = int(grid.get("cell_height", 0))
+    var separation_x = int(grid.get("separation_x", 0))
+    var separation_y = int(grid.get("separation_y", 0))
+    var margin_x = int(grid.get("margin_x", 0))
+    var margin_y = int(grid.get("margin_y", 0))
+    return {
+        "x": margin_x + cell.x * (cell_width + separation_x),
+        "y": margin_y + cell.y * (cell_height + separation_y),
+        "width": cell_width,
+        "height": cell_height
+    }
+
+func _make_atlas_frame(sheet: Texture2D, raw_region: Variant, context: String) -> AtlasTexture:
+    if sheet == null:
+        utils_script.log_error("Region frame specs require spritesheet at " + context)
+        return null
+    if not (raw_region is Dictionary):
+        utils_script.log_error(context + " must be a dictionary with x, y, width, height")
+        return null
+    var region = raw_region as Dictionary
+    var rect := Rect2(
+        float(region.get("x", 0.0)),
+        float(region.get("y", 0.0)),
+        float(region.get("width", 0.0)),
+        float(region.get("height", 0.0))
+    )
+    if rect.size.x <= 0 or rect.size.y <= 0:
+        utils_script.log_error(context + " requires positive width and height")
+        return null
+    if rect.position.x + rect.size.x > sheet.get_width() or rect.position.y + rect.size.y > sheet.get_height():
+        utils_script.log_error("%s region %s exceeds spritesheet bounds %dx%d" % [context, str(rect), sheet.get_width(), sheet.get_height()])
+        return null
+    var atlas := AtlasTexture.new()
+    atlas.atlas = sheet
+    atlas.region = rect
+    return atlas
+
+func _prepare_sprite_frames(node: AnimatedSprite2D, first_animation_name: String) -> SpriteFrames:
+    var sprite_frames: SpriteFrames = null
+    var existing_frames = node.sprite_frames
+    if existing_frames:
+        var duplicated = existing_frames.duplicate(true)
+        if duplicated is SpriteFrames:
+            sprite_frames = duplicated
+    if sprite_frames == null:
+        sprite_frames = SpriteFrames.new()
+        if sprite_frames.has_animation("default") and first_animation_name != "default" and sprite_frames.get_frame_count("default") == 0:
+            sprite_frames.remove_animation("default")
+    return sprite_frames
+
+func _reset_animation(sprite_frames: SpriteFrames, animation_name: String, options: Dictionary) -> void:
+    if sprite_frames.has_animation(animation_name):
+        sprite_frames.clear(animation_name)
+    else:
+        sprite_frames.add_animation(animation_name)
+    sprite_frames.set_animation_speed(animation_name, max(float(options.get("fps", 8.0)), 0.01))
+    sprite_frames.set_animation_loop(animation_name, bool(options.get("loop", false)))
+
+func _finalize_sprite_frames(node: AnimatedSprite2D, sprite_frames: SpriteFrames, params: Dictionary, active_animation: String) -> bool:
     if params.has("resource_save_path"):
         var resource_save_path = _normalize_res_path(params.get("resource_save_path", ""))
         if resource_save_path.is_empty():
@@ -586,10 +750,127 @@ func build_sprite_frames(params: Dictionary) -> bool:
             return false
         sprite_frames = reloaded_frames
 
-    var animated_sprite := node as AnimatedSprite2D
-    animated_sprite.sprite_frames = sprite_frames
-    animated_sprite.animation = StringName(animation_name)
+    node.sprite_frames = sprite_frames
+    node.animation = StringName(active_animation)
     return true
+
+func paint_tilemap(params: Dictionary) -> bool:
+    var node = _resolve_node(params.get("node_path", "root"), "node_path")
+    if not node:
+        return false
+    if not (node is TileMapLayer):
+        utils_script.log_error("Node is not a TileMapLayer (the TileMap node is deprecated since Godot 4.3): " + str(params.get("node_path", "root")))
+        return false
+
+    var layer := node as TileMapLayer
+
+    if params.has("tile_set"):
+        var tile_set_value = _convert_json_value(params.get("tile_set"), "paint_tilemap.tile_set")
+        if tile_set_value is String:
+            tile_set_value = _convert_json_value({"__resource": tile_set_value}, "paint_tilemap.tile_set")
+        if not (tile_set_value is TileSet):
+            utils_script.log_error("paint_tilemap.tile_set must resolve to a TileSet resource")
+            return false
+        layer.tile_set = tile_set_value
+
+    if layer.tile_set == null:
+        utils_script.log_error("TileMapLayer has no tile_set; assign one before painting cells")
+        return false
+
+    if bool(params.get("clear", false)):
+        layer.clear()
+
+    var erase_cells = params.get("erase", [])
+    if erase_cells is Array:
+        for raw_coords in erase_cells:
+            var coords: Variant = _coerce_cell_coords(raw_coords, "paint_tilemap.erase")
+            if coords == null:
+                return false
+            layer.erase_cell(coords)
+
+    var cells = params.get("cells", [])
+    if not (cells is Array):
+        utils_script.log_error("paint_tilemap.cells must be an array")
+        return false
+    for raw_cell in cells:
+        if not (raw_cell is Dictionary):
+            utils_script.log_error("paint_tilemap.cells entries must be dictionaries")
+            return false
+        if not _set_tilemap_cell(layer, raw_cell as Dictionary, _coerce_cell_coords(raw_cell.get("coords"), "paint_tilemap.cells")):
+            return false
+
+    var fills = params.get("fills", [])
+    if not (fills is Array):
+        utils_script.log_error("paint_tilemap.fills must be an array")
+        return false
+    for raw_fill in fills:
+        if not (raw_fill is Dictionary):
+            utils_script.log_error("paint_tilemap.fills entries must be dictionaries")
+            return false
+        var fill = raw_fill as Dictionary
+        var from_coords: Variant = _coerce_cell_coords(fill.get("from"), "paint_tilemap.fills.from")
+        var to_coords: Variant = _coerce_cell_coords(fill.get("to"), "paint_tilemap.fills.to")
+        if from_coords == null or to_coords == null:
+            return false
+        var start := Vector2i(min(from_coords.x, to_coords.x), min(from_coords.y, to_coords.y))
+        var finish := Vector2i(max(from_coords.x, to_coords.x), max(from_coords.y, to_coords.y))
+        for y in range(start.y, finish.y + 1):
+            for x in range(start.x, finish.x + 1):
+                if not _set_tilemap_cell(layer, fill, Vector2i(x, y)):
+                    return false
+
+    var terrain_fills = params.get("terrain_fills", [])
+    if not (terrain_fills is Array):
+        utils_script.log_error("paint_tilemap.terrain_fills must be an array")
+        return false
+    for raw_terrain_fill in terrain_fills:
+        if not (raw_terrain_fill is Dictionary):
+            utils_script.log_error("paint_tilemap.terrain_fills entries must be dictionaries")
+            return false
+        var terrain_fill = raw_terrain_fill as Dictionary
+        var terrain_cells: Array[Vector2i] = []
+        var raw_cells = terrain_fill.get("cells", [])
+        if not (raw_cells is Array) or raw_cells.is_empty():
+            utils_script.log_error("terrain_fills entries require a non-empty cells array")
+            return false
+        for raw_coords in raw_cells:
+            var coords: Variant = _coerce_cell_coords(raw_coords, "paint_tilemap.terrain_fills.cells")
+            if coords == null:
+                return false
+            terrain_cells.append(coords)
+        layer.set_cells_terrain_connect(
+            terrain_cells,
+            int(terrain_fill.get("terrain_set", 0)),
+            int(terrain_fill.get("terrain", 0)),
+            bool(terrain_fill.get("ignore_empty_terrains", true))
+        )
+    return true
+
+func _set_tilemap_cell(layer: TileMapLayer, cell: Dictionary, coords: Variant) -> bool:
+    if not (coords is Vector2i):
+        return false
+    var source_id := int(cell.get("source_id", 0))
+    if not layer.tile_set.has_source(source_id):
+        utils_script.log_error("TileSet has no source with id %d" % source_id)
+        return false
+    var atlas_value = cell.get("atlas_coords", {})
+    var atlas_coords := Vector2i.ZERO
+    if atlas_value is Dictionary and not atlas_value.is_empty():
+        atlas_coords = Vector2i(int(atlas_value.get("x", 0)), int(atlas_value.get("y", 0)))
+    var source = layer.tile_set.get_source(source_id)
+    if source is TileSetAtlasSource and not (source as TileSetAtlasSource).has_tile(atlas_coords):
+        utils_script.log_error("Atlas source %d has no tile at %s; expose it with build_tileset first" % [source_id, str(atlas_coords)])
+        return false
+    layer.set_cell(coords, source_id, atlas_coords, int(cell.get("alternative", 0)))
+    return true
+
+func _coerce_cell_coords(raw_coords: Variant, context: String) -> Variant:
+    if raw_coords is Dictionary and raw_coords.has("x") and raw_coords.has("y"):
+        return Vector2i(int(raw_coords.get("x")), int(raw_coords.get("y")))
+    if raw_coords is Array and raw_coords.size() == 2:
+        return Vector2i(int(raw_coords[0]), int(raw_coords[1]))
+    utils_script.log_error(context + " requires cell coords as {x,y} or [x,y]")
+    return null
 
 func _apply_common_node_configuration(node: Node, params: Dictionary) -> bool:
     if not _apply_properties(node, params.get("properties", {}), false, "properties"):
@@ -714,97 +995,7 @@ func _apply_theme_overrides(control: Control, raw_overrides: Variant) -> bool:
     return true
 
 func _convert_json_value(value: Variant, context: String) -> Variant:
-    match typeof(value):
-        TYPE_DICTIONARY:
-            var dictionary = value as Dictionary
-            if dictionary.has("__resource"):
-                return _load_resource_reference(dictionary["__resource"], context)
-            if dictionary.has("__type"):
-                return _convert_typed_value(dictionary, context)
-            var converted_dictionary := {}
-            for key in dictionary.keys():
-                var converted = _convert_json_value(dictionary[key], "%s.%s" % [context, str(key)])
-                if converted == null and dictionary[key] != null:
-                    return null
-                converted_dictionary[key] = converted
-            return converted_dictionary
-        TYPE_ARRAY:
-            var converted_array: Array = []
-            for index in range(value.size()):
-                var converted_item = _convert_json_value(value[index], "%s[%d]" % [context, index])
-                if converted_item == null and value[index] != null:
-                    return null
-                converted_array.append(converted_item)
-            return converted_array
-        _:
-            return value
-
-func _convert_typed_value(dictionary: Dictionary, context: String) -> Variant:
-    var type_name = str(dictionary.get("__type", ""))
-    match type_name:
-        "Vector2":
-            return Vector2(float(dictionary.get("x", 0.0)), float(dictionary.get("y", 0.0)))
-        "Vector2i":
-            return Vector2i(int(dictionary.get("x", 0)), int(dictionary.get("y", 0)))
-        "Vector3":
-            return Vector3(float(dictionary.get("x", 0.0)), float(dictionary.get("y", 0.0)), float(dictionary.get("z", 0.0)))
-        "Vector3i":
-            return Vector3i(int(dictionary.get("x", 0)), int(dictionary.get("y", 0)), int(dictionary.get("z", 0)))
-        "Vector4":
-            return Vector4(
-                float(dictionary.get("x", 0.0)),
-                float(dictionary.get("y", 0.0)),
-                float(dictionary.get("z", 0.0)),
-                float(dictionary.get("w", 0.0))
-            )
-        "Vector4i":
-            return Vector4i(
-                int(dictionary.get("x", 0)),
-                int(dictionary.get("y", 0)),
-                int(dictionary.get("z", 0)),
-                int(dictionary.get("w", 0))
-            )
-        "Rect2":
-            return Rect2(
-                float(dictionary.get("x", 0.0)),
-                float(dictionary.get("y", 0.0)),
-                float(dictionary.get("width", 0.0)),
-                float(dictionary.get("height", 0.0))
-            )
-        "Rect2i":
-            return Rect2i(
-                int(dictionary.get("x", 0)),
-                int(dictionary.get("y", 0)),
-                int(dictionary.get("width", 0)),
-                int(dictionary.get("height", 0))
-            )
-        "Color":
-            return Color(
-                float(dictionary.get("r", 0.0)),
-                float(dictionary.get("g", 0.0)),
-                float(dictionary.get("b", 0.0)),
-                float(dictionary.get("a", 1.0))
-            )
-        "NodePath":
-            return NodePath(str(dictionary.get("value", "")))
-        "StringName":
-            return StringName(str(dictionary.get("value", "")))
-        _:
-            utils_script.log_error("Unsupported typed JSON value at %s: %s" % [context, type_name])
-            return null
-
-func _load_resource_reference(raw_path: Variant, context: String) -> Variant:
-    var resource_path = _normalize_res_path(raw_path)
-    if resource_path.is_empty():
-        utils_script.log_error("Empty resource reference at " + context)
-        return null
-
-    var resource = load(resource_path)
-    if not resource:
-        utils_script.log_error("Failed to load resource at %s: %s" % [context, resource_path])
-        return null
-
-    return resource
+    return variant_codec.decode(value, context)
 
 func _collect_frame_paths(params: Dictionary) -> Array[String]:
     if params.has("frame_paths"):
@@ -848,9 +1039,12 @@ func _load_texture(raw_path: String, context: String) -> Texture2D:
         utils_script.log_error("Empty texture path for " + context)
         return null
 
-    var resource = load(texture_path)
-    if resource is Texture2D:
-        return resource
+    # Guard with exists() so an unimported image falls through to the direct
+    # Image loader below without the engine printing a loader error.
+    if ResourceLoader.exists(texture_path):
+        var resource = load(texture_path)
+        if resource is Texture2D:
+            return resource
 
     var absolute_path = ProjectSettings.globalize_path(texture_path)
     if not FileAccess.file_exists(absolute_path):
@@ -971,6 +1165,11 @@ func _insert_child(parent: Node, child: Node, index: int) -> void:
 func _set_owner_recursive(node: Node, owner: Node) -> void:
     if node != owner:
         node.owner = owner
+    # Do not descend into instanced scenes: their internal children belong to
+    # the instance, and re-owning them would serialize duplicates into the
+    # editing scene.
+    if node != owner and not node.scene_file_path.is_empty():
+        return
     for child in node.get_children():
         if child is Node:
             _set_owner_recursive(child, owner)

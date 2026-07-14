@@ -2,6 +2,9 @@ class_name GodotSkillUtils
 extends RefCounted
 
 static var debug_mode: bool = false
+# Set by log_error so the dispatcher can exit non-zero when any operation
+# reported a failure — CI and shell callers rely on the exit code.
+static var had_errors: bool = false
 
 static func log_debug(message: String) -> void:
     if debug_mode:
@@ -11,6 +14,7 @@ static func log_info(message: String) -> void:
     print("[INFO] " + message)
 
 static func log_error(message: String) -> void:
+    had_errors = true
     printerr("[ERROR] " + message)
 
 static func get_script_by_name(name_of_class: String) -> Script:

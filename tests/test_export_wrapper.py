@@ -18,6 +18,8 @@ def main() -> None:
     try:
         test_release_dry_run_uses_release_flag_and_resolves_paths()
         test_debug_dry_run_uses_debug_flag()
+        test_patch_dry_run_uses_patch_bases()
+        test_preflight_reads_linux_server_preset()
         test_missing_project_file_fails_cleanly()
         print("All export wrapper tests passed.")
     finally:
@@ -66,6 +68,55 @@ def test_debug_dry_run_uses_debug_flag() -> None:
     assert payload["command"][4] == "--export-debug"
     assert payload["command"][5] == "Android"
     assert payload["command"][6] == str(output_path.resolve())
+
+
+def test_patch_dry_run_uses_patch_bases() -> None:
+    project_path = copy_fixture_project()
+    output_path = project_path / "build/patches/update.pck"
+    base_a = project_path / "build/base.pck"
+    base_b = project_path / "build/hotfix.pck"
+    base_a.parent.mkdir(parents=True, exist_ok=True)
+    base_a.write_bytes(b"base")
+    base_b.write_bytes(b"hotfix")
+    payload = run_wrapper(
+        [
+            str(project_path),
+            "Linux Server",
+            str(output_path),
+            "--mode",
+            "patch",
+            "--patches",
+            str(base_a),
+            str(base_b),
+            "--dry-run",
+            "--json",
+        ]
+    )
+
+    assert payload["mode"] == "patch"
+    assert payload["command"][4] == "--export-patch"
+    assert payload["command"][-2:] == ["--patches", f"{base_a.resolve()},{base_b.resolve()}"]
+
+
+def test_preflight_reads_linux_server_preset() -> None:
+    project_path = copy_fixture_project()
+    (project_path / "export_presets.cfg").write_text(
+        """[preset.0]\n\nname=\"Linux Server\"\nplatform=\"Linux\"\nrunnable=true\n\n[preset.0.options]\n""",
+        encoding="utf-8",
+    )
+    output_path = project_path.parent / "build/server.x86_64"
+    payload = run_wrapper(
+        [
+            str(project_path),
+            "Linux Server",
+            str(output_path),
+            "--preflight-only",
+        ]
+    )
+
+    assert payload["preflight"]["ok"] is True
+    assert payload["preflight"]["platform"] == "Linux"
+    assert "Linux Server" in payload["preflight"]["available_presets"]
 
 
 def test_missing_project_file_fails_cleanly() -> None:

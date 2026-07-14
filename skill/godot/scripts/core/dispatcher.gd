@@ -39,7 +39,9 @@ func _init():
         quit(1)
         
     _delegate_operation(operation, params)
-    quit()
+    # Any op that logged an error exits 1 so shell callers and CI can gate on
+    # the exit code instead of parsing stderr.
+    quit(1 if utils_script.had_errors else 0)
 
 func _delegate_operation(operation: String, params: Dictionary) -> void:
     var script_path = ""
@@ -85,6 +87,30 @@ func _delegate_operation(operation: String, params: Dictionary) -> void:
             script_path = local_dir.path_join("../utils/resave_resources.gd")
         "check_project":
             script_path = local_dir.path_join("../debug/check_project.gd")
+        "inspect_project":
+            script_path = local_dir.path_join("../inspect/inspect_project.gd")
+        "inspect_scene":
+            script_path = local_dir.path_join("../inspect/inspect_scene.gd")
+        "inspect_resource":
+            script_path = local_dir.path_join("../inspect/inspect_resource.gd")
+        "resource_batch":
+            script_path = local_dir.path_join("../resource/resource_batch.gd")
+        "build_tileset":
+            script_path = local_dir.path_join("../resource/build_tileset.gd")
+        "paint_tilemap":
+            script_path = local_dir.path_join("../scene/paint_tilemap.gd")
+        "build_animation":
+            script_path = local_dir.path_join("../scene/build_animation.gd")
+        "build_animation_tree":
+            script_path = local_dir.path_join("../scene/build_animation_tree.gd")
+        "setup_audio_buses":
+            script_path = local_dir.path_join("../audio/setup_audio_buses.gd")
+        "set_import_options":
+            script_path = local_dir.path_join("../import/set_import_options.gd")
+        "project_batch":
+            script_path = local_dir.path_join("../project/project_batch.gd")
+        "audit_imports":
+            script_path = local_dir.path_join("../import/audit_imports.gd")
         _:
             utils_script.log_error("Unknown operation: " + operation)
             quit(1)

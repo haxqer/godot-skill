@@ -10,7 +10,10 @@ The bundled tooling for this lives in `scripts/debug/`:
 - `run_project.py` — run the project headlessly and return parsed diagnostics.
 - `godot_log_parser.py` — turn any Godot log text into structured diagnostics.
 - `check_project` — dispatcher operation that statically loads every script,
-  scene, shader, and resource and reports which ones fail to compile or load.
+  scene, shader, resource, GDExtension, and editor plugin and reports failures.
+- `validate_project.py` — run `check_project` plus C# solution compilation.
+- `run_scenario.py` — drive deterministic input, assertions, screenshots, logs,
+  and performance thresholds.
 
 ## The Loop
 
@@ -47,6 +50,11 @@ godot --headless --path /abs/project \
 `check_project` prints a JSON summary of which files failed to load; piping its
 combined output through the parser gives line-level parse-error diagnostics. Scope
 it to a subtree with `{"project_path":"scripts/enemies"}`.
+
+Use `python3 scripts/debug/validate_project.py /abs/project --pretty` when the
+project contains C#, GDExtensions, or editor plugins. Use a scenario from
+`references/automation_api.md` when validation requires a specific input flow,
+visual state, log message, or performance bound.
 
 ## Capturing Output Correctly
 
