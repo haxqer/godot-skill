@@ -8,7 +8,7 @@ Read this reference when invoking the bundled inspection, resource/project editi
 - Inspection operations
 - Resource transactions
 - Project settings transactions
-- Content authoring: tilesets, tilemaps, sprite atlases, animations, audio buses
+- Content authoring: tilesets, tilemaps, sprite atlases, animations, audio buses, themes, gridmaps, 3D collision/CSG, glTF export, navmesh baking, replication config
 - Unit tests (GUT / GdUnit4)
 - Import and validation
 - Scenario runner
@@ -84,6 +84,25 @@ Prefer property-based writes because they stay inspectable through `inspect_reso
 
 - `call_method`: `method` (must exist on the resource), typed `args` array, optional `expect_ok` to fail the transaction when an `Error`-returning method does not return `OK`.
 - Arguments accept the full typed JSON surface, including `{"__resource": ...}` references and inline `{"__resource_type": ...}` construction, so a `call_method` can attach sub-resources.
+- Inline `{"__resource_type": ...}` construction also accepts an ordered `method_calls` array (same shape as `call_method`), so a builder-only sub-resource can be created in a single property write. It also accepts `__curve` and `__gradient` sugar — see [Typed JSON Values](#typed-json-values).
+- `bake_navmesh`: bakes the target resource (a `NavigationPolygon` or a `NavigationMesh`) from procedural geometry using the synchronous `NavigationServer2D/3D.bake_from_source_geometry_data`. Set agent/cell parameters with a preceding `set_properties` action, then supply geometry:
+  - 2D (`NavigationPolygon`): `traversable_outlines` (required, an array of `[[x,y], …]` outlines) and optional `obstruction_outlines`.
+  - 3D (`NavigationMesh`): `faces` (a flat list of `[x,y,z]` triangle vertices, a multiple of 3) and/or `source_meshes` (`[{"mesh": "res://…", }]`).
+  - Feed collision/procedural geometry, not visual meshes — the headless dummy renderer cannot read visual-mesh geometry back from the GPU. The bake is synchronous; never the `_async` variant in a one-shot run.
+
+```json
+{
+  "resource_path": "nav/level.tres",
+  "create_if_missing": true,
+  "resource_type": "NavigationPolygon",
+  "actions": [
+    {"type": "set_properties", "properties": {"agent_radius": 8.0, "cell_size": 1.0}},
+    {"type": "bake_navmesh",
+     "traversable_outlines": [[[0,0],[512,0],[512,512],[0,512]]],
+     "obstruction_outlines": [[[200,200],[300,200],[300,300],[200,300]]]}
+  ]
+}
+```
 
 Two cross-cutting notes for all resource-writing ops:
 
@@ -105,6 +124,8 @@ Two cross-cutting notes for all resource-writing ops:
 - `set_layer_name`: `layer_type`, `layer` from 1 to 32, `layer_name`. Types are `2d_physics`, `3d_physics`, `2d_render`, `3d_render`, `2d_navigation`, `3d_navigation`.
 - `set_main_scene`: existing `scene_path`.
 - `add_translation` / `remove_translation`: translation `path`.
+- `set_shader_global`: `name`, `global_type` (a shader-globals type string such as `color`, `vec3`, `float`, `sampler2D`), and typed `value`. Persists to the `[shader_globals]` section as a `{type, value}` dictionary shared by all shaders that declare `global uniform`.
+- `clear_shader_global`: `name` (idempotent).
 
 Example InputMap event:
 
@@ -280,6 +301,114 @@ Patches the `[params]` section of an asset's `.import` sidecar, then invalidates
 - `set_project_setting` writes `audio/buses/default_bus_layout`; values equal to the engine default are omitted from `project.godot` by design.
 - Route players to a bus with `configure_node`: `{"properties": {"bus": "Music"}}` on an `AudioStreamPlayer`.
 
+### build_theme
+
+Authors a `Theme` `.tres` grouped by control type. Every Theme item setter is a positional `(name, theme_type, value)` call with no property equivalent, so `resource_batch` needs dozens of unlabeled `call_method` entries; this op groups them. Colors accept hex strings (`"#2a2a2a"`) or typed `{"__type": "Color"}`. Styleboxes accept a flat `StyleBoxFlat` shorthand (with `corner_radius` / `border_width` / `content_margin` / `expand_margin` convenience keys that call the `*_all` setters), an inline `{"__resource_type": "StyleBox…"}`, a `{"__resource": "res://…"}` reference, or the string `"empty"` for a `StyleBoxEmpty`.
+
+```json
+{
+  "resource_path": "theme/main.tres",
+  "default_font": {"__resource": "res://fonts/inter.ttf"},
+  "default_font_size": 16,
+  "types": {
+    "Button": {
+      "styleboxes": {
+        "normal": {"bg_color": "#2a2a2a", "corner_radius": 6, "border_width": 1, "border_color": "#111111", "content_margin": 8},
+        "hover": {"bg_color": "#3a3a3a", "corner_radius": 6},
+        "focus": "empty"
+      },
+      "colors": {"font_color": "#ffffff", "font_hover_color": "#eeeeee"},
+      "constants": {"h_separation": 8},
+      "font_sizes": {"font_size": 16}
+    }
+  },
+  "variations": {"HeaderLabel": {"base": "Label", "colors": {"font_color": "#88ccff"}, "font_sizes": {"font_size": 28}}}
+}
+```
+
+- Item names are not validated by the engine — a typo silently falls back to the default theme. Match the control's documented item names.
+- Wire the finished theme project-wide with `project_batch` `set_setting` on `gui/theme/custom`, or per-control with `configure_node` (`theme`) / `theme_type_variation`.
+
+### paint_gridmap
+
+The 3D parallel to `paint_tilemap`. `GridMap` cells exist only through `set_cell_item`, so there is no bulk property for `configure_node` to set. Assign a `mesh_library` (build it with `export_mesh_library`), then paint.
+
+```json
+{
+  "scene_path": "scenes/level.tscn",
+  "node_path": "root/GridMap",
+  "mesh_library": "meshlib/tiles.meshlib",
+  "cell_size": {"__type": "Vector3", "x": 2, "y": 2, "z": 2},
+  "clear": false,
+  "fills": [{"from": [0, 0, 0], "to": [7, 0, 7], "item": 0, "orient": 0}],
+  "cells": [{"pos": [3, 1, 4], "item": 2, "orient": 22}],
+  "erase": [[0, 0, 0]]
+}
+```
+
+- `pos`/`from`/`to`/`erase` accept `[x,y,z]` or `{x,y,z}`. `item` must exist in the mesh library; `orient` is a `0`–`23` orthogonal index. Also runs inside `scene_batch`.
+
+### bake_collision
+
+Generates a `StaticBody3D` + `CollisionShape3D` child from a `MeshInstance3D` via the engine's `create_*_collision` helpers. `mode` is `trimesh` (concave, static only), `convex` (accepts `clean`/`simplify`), or `multi_convex` (convex decomposition). The op sets the mesh's `owner` to the scene root before baking so the generated subtree serializes.
+
+```json
+{"scene_path": "props/crate.tscn", "node_path": "root/Mesh", "mode": "trimesh"}
+```
+
+### collision_from_sprite
+
+Traces a sprite's alpha silhouette into `CollisionPolygon2D` children with `BitMap.opaque_to_polygons`. Adds one collider per opaque island.
+
+```json
+{"scene_path": "actors/enemy.tscn", "node_path": "root/Sprite2D", "texture": "art/enemy.png", "alpha_threshold": 0.1, "epsilon": 2.0, "one_way": false}
+```
+
+- `texture` defaults to the target `Sprite2D`'s texture. Points are centered automatically when the sprite is `centered`; add an extra `offset` if needed. Lower `epsilon` = more vertices (higher physics cost).
+
+### bake_csg
+
+Freezes a `CSGShape3D` tree into a static `ArrayMesh` (+ optional collision). CSG geometry updates are deferred one frame, so this op runs inside the live SceneTree and awaits frames before baking. Point `node_path` at the CSG root (`is_root_shape`).
+
+```json
+{
+  "scene_path": "proto/level.tscn",
+  "node_path": "root/CSGCombiner3D",
+  "out_mesh": "meshes/level.res",
+  "bake_collision": true,
+  "replace_with_meshinstance": true,
+  "save_path": "proto/level_baked.tscn"
+}
+```
+
+- `out_mesh` saves the baked mesh. `replace_with_meshinstance` swaps the CSG node for a `MeshInstance3D` (plus a `StaticBody3D`/`CollisionShape3D` when `bake_collision` is set) and rewrites the scene to `save_path` (or in place). Without `replace_with_meshinstance` the scene is untouched.
+
+### gltf_export
+
+Exports an edited scene (or a subtree via `node_path`) to `.glb`/`.gltf` through `GLTFDocument`. Import stays with the standard `--import` pipeline.
+
+```json
+{"scene_path": "scenes/level.tscn", "node_path": "root", "out": "export/level.glb"}
+```
+
+- `out` may be `res://`, `user://`, an absolute build path, or a bare project-relative path. The extension (`.glb` binary vs `.gltf` text) selects the format.
+
+### build_replication_config
+
+Authors a `SceneReplicationConfig` `.tres` for a `MultiplayerSynchronizer`. Property paths are relative to the synchronizer's `root_path` (default its parent). `replication_mode` is `never`, `always`, or `on_change`.
+
+```json
+{
+  "resource_path": "net/player_repl.tres",
+  "properties": [
+    {"path": ".:position", "spawn": true, "replication_mode": "on_change"},
+    {"path": ".:velocity", "replication_mode": "always"}
+  ]
+}
+```
+
+- Assign the result with `configure_node` (`replication_config`) on the synchronizer. `resource_batch` can also build this via `call_method`; this op just labels the ordering and avoids the deprecated `property_set_sync`/`property_set_watch`.
+
 ## Unit Tests (GUT / GdUnit4)
 
 Godot has no built-in project test runner. `scripts/test/run_tests.py` auto-detects the two community standards and normalizes their exit codes:
@@ -361,9 +490,11 @@ Property assertion operators are `equals`, `not_equals`, `greater_than`, `greate
 The shared codec accepts plain JSON plus:
 
 - Resource reference: `{"__resource":"res://theme/main.tres"}`.
-- Resource construction: `{"__resource_type":"Gradient","properties":{...}}`.
+- Resource construction: `{"__resource_type":"Gradient","properties":{...}}`, optionally with an ordered `"method_calls":[{"method":"add_point","args":[...],"expect_ok":false}]` for builder-only state.
 - `StringName`, `NodePath`, `Vector2`, `Vector2i`, `Rect2`, `Rect2i`, `Vector3`, `Vector3i`, `Transform2D`, `Vector4`, `Vector4i`, `Plane`, `Quaternion`, `AABB`, `Basis`, `Transform3D`, `Projection`, and `Color` through `{"__type":"TypeName",...}`.
 - Packed byte/int/float/string/vector/color arrays through `{"__type":"Packed...Array","values":[...]}`.
+- Curve sugar: `{"__curve":{"min_value":0,"max_value":1,"points":[{"x":0,"y":0},{"x":1,"y":1,"left_tangent":0,"right_tangent":0}]}}` builds a `Curve` (its points are otherwise builder-only, so this is the ergonomic way to inline scale/alpha/velocity ramps).
+- Gradient sugar: `{"__gradient":{"points":[{"offset":0,"color":"..."},{"offset":1,"color":"..."}]}}` (or `{"offsets":[...],"colors":[...]}`) builds a clean `Gradient` with exactly those stops — unlike `add_point`, which appends to the two default stops.
 
 `Rect2`/`Rect2i` accept either typed `position` plus `size` dictionaries or the compatibility form `x`, `y`, `width`, `height`.
 

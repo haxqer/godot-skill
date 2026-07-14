@@ -11,6 +11,10 @@ const CONTROL_SIDE_MAP = {
     "bottom": 3
 }
 const FRAME_IMAGE_EXTENSIONS = ["png", "webp", "jpg", "jpeg"]
+# Markers (persisted to the .tscn) so bake_collision / collision_from_sprite can
+# replace their own previously-generated children instead of stacking duplicates.
+const BAKED_COLLISION_META = "skill_baked_collision"
+const TRACED_COLLISION_META = "skill_traced_collision"
 
 var scene_path := ""
 var scene_root: Node = null
@@ -148,6 +152,12 @@ func dispatch_action(action_type: String, params: Dictionary) -> bool:
             return build_sprite_frames(params)
         "paint_tilemap":
             return paint_tilemap(params)
+        "paint_gridmap":
+            return paint_gridmap(params)
+        "bake_collision":
+            return bake_collision(params)
+        "collision_from_sprite":
+            return collision_from_sprite(params)
         _:
             utils_script.log_error("Unsupported scene action: " + action_type)
             return false
@@ -871,6 +881,303 @@ func _coerce_cell_coords(raw_coords: Variant, context: String) -> Variant:
         return Vector2i(int(raw_coords[0]), int(raw_coords[1]))
     utils_script.log_error(context + " requires cell coords as {x,y} or [x,y]")
     return null
+
+func paint_gridmap(params: Dictionary) -> bool:
+    var node = _resolve_node(params.get("node_path", "root"), "node_path")
+    if not node:
+        return false
+    if not (node is GridMap):
+        utils_script.log_error("Node is not a GridMap: " + str(params.get("node_path", "root")))
+        return false
+
+    var grid := node as GridMap
+
+    if params.has("mesh_library"):
+        var library_value = _convert_json_value(params.get("mesh_library"), "paint_gridmap.mesh_library")
+        if library_value is String:
+            library_value = _convert_json_value({"__resource": library_value}, "paint_gridmap.mesh_library")
+        if not (library_value is MeshLibrary):
+            utils_script.log_error("paint_gridmap.mesh_library must resolve to a MeshLibrary resource")
+            return false
+        grid.mesh_library = library_value
+
+    if params.has("cell_size"):
+        var cell_size = _convert_json_value(params.get("cell_size"), "paint_gridmap.cell_size")
+        if cell_size is Vector3:
+            grid.cell_size = cell_size
+        else:
+            utils_script.log_error("paint_gridmap.cell_size must be a Vector3 value")
+            return false
+
+    if grid.mesh_library == null:
+        utils_script.log_error("GridMap has no mesh_library; assign one before painting cells")
+        return false
+    var valid_items := PackedInt32Array(grid.mesh_library.get_item_list())
+
+    if bool(params.get("clear", false)):
+        grid.clear()
+
+    var erase_cells = params.get("erase", [])
+    if erase_cells is Array:
+        for raw_coords in erase_cells:
+            var coords: Variant = _coerce_cell_coords3(raw_coords, "paint_gridmap.erase")
+            if coords == null:
+                return false
+            grid.set_cell_item(coords, GridMap.INVALID_CELL_ITEM)
+
+    var cells = params.get("cells", [])
+    if not (cells is Array):
+        utils_script.log_error("paint_gridmap.cells must be an array")
+        return false
+    for raw_cell in cells:
+        if not (raw_cell is Dictionary):
+            utils_script.log_error("paint_gridmap.cells entries must be dictionaries")
+            return false
+        var cell = raw_cell as Dictionary
+        if not _set_gridmap_cell(grid, valid_items, _coerce_cell_coords3(cell.get("pos"), "paint_gridmap.cells.pos"), cell):
+            return false
+
+    var fills = params.get("fills", [])
+    if not (fills is Array):
+        utils_script.log_error("paint_gridmap.fills must be an array")
+        return false
+    for raw_fill in fills:
+        if not (raw_fill is Dictionary):
+            utils_script.log_error("paint_gridmap.fills entries must be dictionaries")
+            return false
+        var fill = raw_fill as Dictionary
+        var from_coords: Variant = _coerce_cell_coords3(fill.get("from"), "paint_gridmap.fills.from")
+        var to_coords: Variant = _coerce_cell_coords3(fill.get("to"), "paint_gridmap.fills.to")
+        if from_coords == null or to_coords == null:
+            return false
+        var start := Vector3i(min(from_coords.x, to_coords.x), min(from_coords.y, to_coords.y), min(from_coords.z, to_coords.z))
+        var finish := Vector3i(max(from_coords.x, to_coords.x), max(from_coords.y, to_coords.y), max(from_coords.z, to_coords.z))
+        for z in range(start.z, finish.z + 1):
+            for y in range(start.y, finish.y + 1):
+                for x in range(start.x, finish.x + 1):
+                    if not _set_gridmap_cell(grid, valid_items, Vector3i(x, y, z), fill):
+                        return false
+    return true
+
+func _set_gridmap_cell(grid: GridMap, valid_items: PackedInt32Array, coords: Variant, cell: Dictionary) -> bool:
+    if not (coords is Vector3i):
+        return false
+    var item := int(cell.get("item", -1))
+    if item != GridMap.INVALID_CELL_ITEM and not (item in valid_items):
+        utils_script.log_error("MeshLibrary has no item with id %d; build it with export_mesh_library first" % item)
+        return false
+    grid.set_cell_item(coords, item, int(cell.get("orient", 0)))
+    return true
+
+func _coerce_cell_coords3(raw_coords: Variant, context: String) -> Variant:
+    if raw_coords is Dictionary and raw_coords.has("x") and raw_coords.has("y") and raw_coords.has("z"):
+        return Vector3i(int(raw_coords.get("x")), int(raw_coords.get("y")), int(raw_coords.get("z")))
+    if raw_coords is Array and raw_coords.size() == 3:
+        return Vector3i(int(raw_coords[0]), int(raw_coords[1]), int(raw_coords[2]))
+    utils_script.log_error(context + " requires cell coords as {x,y,z} or [x,y,z]")
+    return null
+
+func bake_collision(params: Dictionary) -> bool:
+    var node = _resolve_node(params.get("node_path", "root"), "node_path")
+    if not node:
+        return false
+    if not (node is MeshInstance3D):
+        utils_script.log_error("bake_collision requires a MeshInstance3D: " + str(params.get("node_path", "root")))
+        return false
+
+    var mesh_instance := node as MeshInstance3D
+    if mesh_instance.mesh == null:
+        utils_script.log_error("bake_collision: MeshInstance3D has no mesh")
+        return false
+
+    # The engine's create_*_collision helpers own the generated children only
+    # when the mesh already has an owner (if (get_owner()) { set_owner(...) }).
+    # Pre-set the owner so serialization works even for a root-level mesh, then
+    # re-own the new subtree defensively.
+    if mesh_instance != scene_root:
+        mesh_instance.owner = scene_root
+
+    # Idempotent reruns: drop the collision body this op generated last time so a
+    # second bake replaces it instead of stacking a duplicate StaticBody3D.
+    for child in mesh_instance.get_children():
+        if child is Node and (child as Node).has_meta(BAKED_COLLISION_META):
+            child.free()
+
+    var existing_children := mesh_instance.get_children()
+    var mode := str(params.get("mode", "trimesh"))
+    match mode:
+        "trimesh":
+            mesh_instance.create_trimesh_collision()
+        "convex":
+            mesh_instance.create_convex_collision(bool(params.get("clean", true)), bool(params.get("simplify", false)))
+        "multi_convex", "multiple_convex":
+            mesh_instance.create_multiple_convex_collisions()
+        _:
+            utils_script.log_error("bake_collision.mode must be trimesh, convex, or multi_convex")
+            return false
+
+    var created := 0
+    for child in mesh_instance.get_children():
+        if child in existing_children:
+            continue
+        created += 1
+        (child as Node).set_meta(BAKED_COLLISION_META, true)
+        _set_owner_recursive(child, scene_root)
+    if created == 0:
+        utils_script.log_error("bake_collision produced no collision body (empty or degenerate mesh?)")
+        return false
+    return true
+
+func collision_from_sprite(params: Dictionary) -> bool:
+    var node = _resolve_node(params.get("node_path", "root"), "node_path")
+    if not node:
+        return false
+
+    var texture_path := str(params.get("texture", ""))
+    var texture: Texture2D = null
+    if texture_path.is_empty():
+        if node is Sprite2D and (node as Sprite2D).texture != null:
+            texture = (node as Sprite2D).texture
+        else:
+            utils_script.log_error("collision_from_sprite requires texture (or a Sprite2D with a texture)")
+            return false
+    else:
+        texture = _load_texture(texture_path, "collision_from_sprite.texture")
+    if texture == null:
+        return false
+
+    var image := texture.get_image()
+    if image == null:
+        utils_script.log_error("collision_from_sprite could not read image data from texture")
+        return false
+    # Alpha reads need an uncompressed image; VRAM-compressed textures must be
+    # decompressed first or create_from_image_alpha fails.
+    if image.is_compressed() and image.decompress() != OK:
+        utils_script.log_error("collision_from_sprite: texture is VRAM-compressed and could not be decompressed; reimport it lossless")
+        return false
+    # A region/atlas Sprite2D draws only part of the source image; trace that
+    # region, not the whole sheet, or the collider is oversized and mis-placed.
+    if node is Sprite2D and (node as Sprite2D).region_enabled:
+        image = image.get_region(Rect2i((node as Sprite2D).region_rect))
+        if image.is_empty():
+            utils_script.log_error("collision_from_sprite: sprite region_rect is empty")
+            return false
+
+    var bitmap := BitMap.new()
+    bitmap.create_from_image_alpha(image, float(params.get("alpha_threshold", 0.1)))
+    var rect := Rect2i(Vector2i.ZERO, image.get_size())
+    var polygons := bitmap.opaque_to_polygons(rect, float(params.get("epsilon", 2.0)))
+    if polygons.is_empty():
+        utils_script.log_error("collision_from_sprite found no opaque regions to trace")
+        return false
+
+    # Trace coordinates are in image-pixel space; center them when the sprite is
+    # centered (Sprite2D default) so the collider aligns with the drawn texture.
+    var offset := Vector2.ZERO
+    var centered := bool(params.get("centered", node is Sprite2D and (node as Sprite2D).centered))
+    if centered:
+        offset = -Vector2(image.get_size()) / 2.0
+    if params.has("offset"):
+        var raw_offset = _convert_json_value(params.get("offset"), "collision_from_sprite.offset")
+        if raw_offset is Vector2:
+            offset += raw_offset
+
+    # Idempotent reruns: drop colliders this op traced previously.
+    for child in node.get_children():
+        if child is CollisionPolygon2D and (child as Node).has_meta(TRACED_COLLISION_META):
+            child.free()
+
+    var one_way := bool(params.get("one_way", false))
+    var base_name := str(params.get("collision_name", "CollisionPolygon2D"))
+    var created := 0
+    for polygon in polygons:
+        var shifted := PackedVector2Array()
+        for point in polygon:
+            shifted.append(point + offset)
+        var collider := CollisionPolygon2D.new()
+        collider.polygon = shifted
+        collider.one_way_collision = one_way
+        collider.name = base_name if created == 0 else "%s%d" % [base_name, created + 1]
+        collider.set_meta(TRACED_COLLISION_META, true)
+        node.add_child(collider)
+        _set_owner_recursive(collider, scene_root)
+        created += 1
+    return true
+
+func bake_csg(params: Dictionary) -> bool:
+    var node = _resolve_node(params.get("node_path", "root"), "node_path")
+    if not node:
+        return false
+    if not (node is CSGShape3D):
+        utils_script.log_error("bake_csg requires a CSGShape3D root: " + str(params.get("node_path", "root")))
+        return false
+    # Baking with no destination silently discards the result; require an output.
+    if str(params.get("out_mesh", "")).strip_edges().is_empty() and not bool(params.get("replace_with_meshinstance", false)):
+        utils_script.log_error("bake_csg requires out_mesh and/or replace_with_meshinstance")
+        return false
+
+    var csg := node as CSGShape3D
+    var tree := Engine.get_main_loop() as SceneTree
+    if tree == null:
+        utils_script.log_error("bake_csg needs a running SceneTree")
+        return false
+
+    # CSG geometry updates are deferred; the tree must iterate a couple of frames
+    # after the shape enters the tree before bake_static_mesh() returns geometry.
+    var reparented := false
+    if not scene_root.is_inside_tree():
+        tree.root.add_child(scene_root)
+        reparented = true
+    await tree.process_frame
+    await tree.process_frame
+
+    var mesh := csg.bake_static_mesh()
+    var collision_shape: Shape3D = null
+    if bool(params.get("bake_collision", false)):
+        collision_shape = csg.bake_collision_shape()
+
+    if reparented:
+        tree.root.remove_child(scene_root)
+
+    if mesh == null or mesh.get_surface_count() == 0:
+        utils_script.log_error("bake_csg produced empty geometry; point node_path at the CSG root (is_root_shape)")
+        return false
+
+    var out_mesh := _normalize_res_path(params.get("out_mesh", ""))
+    if not out_mesh.is_empty():
+        if not _ensure_directory_for_path(out_mesh):
+            return false
+        var mesh_error := ResourceSaver.save(mesh, out_mesh)
+        if mesh_error != OK:
+            utils_script.log_error("bake_csg failed to save mesh %s: %s" % [out_mesh, error_string(mesh_error)])
+            return false
+
+    if bool(params.get("replace_with_meshinstance", false)):
+        var parent := csg.get_parent()
+        if parent == null or csg == scene_root:
+            utils_script.log_error("bake_csg replace_with_meshinstance needs the CSG node to have a parent")
+            return false
+        var mesh_instance := MeshInstance3D.new()
+        mesh_instance.mesh = mesh
+        mesh_instance.transform = csg.transform
+        var baked_name := csg.name
+        var insert_index := csg.get_index()
+        parent.remove_child(csg)
+        csg.queue_free()
+        mesh_instance.name = baked_name
+        parent.add_child(mesh_instance)
+        parent.move_child(mesh_instance, insert_index)
+        _set_owner_recursive(mesh_instance, scene_root)
+        if collision_shape != null:
+            var body := StaticBody3D.new()
+            body.name = "StaticBody3D"
+            mesh_instance.add_child(body)
+            var shape_node := CollisionShape3D.new()
+            shape_node.name = "CollisionShape3D"
+            shape_node.shape = collision_shape
+            body.add_child(shape_node)
+            _set_owner_recursive(body, scene_root)
+    return true
 
 func _apply_common_node_configuration(node: Node, params: Dictionary) -> bool:
     if not _apply_properties(node, params.get("properties", {}), false, "properties"):

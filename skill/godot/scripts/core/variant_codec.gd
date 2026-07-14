@@ -11,6 +11,10 @@ func decode(value: Variant, context: String = "value") -> Variant:
                 return _load_resource(dictionary.get("__resource"), context)
             if dictionary.has("__resource_type"):
                 return _create_resource(dictionary, context)
+            if dictionary.has("__gradient"):
+                return _decode_gradient(dictionary.get("__gradient"), context)
+            if dictionary.has("__curve"):
+                return _decode_curve(dictionary.get("__curve"), context)
             if dictionary.has("__type"):
                 return _decode_typed(dictionary, context)
 
@@ -310,7 +314,111 @@ func _create_resource(dictionary: Dictionary, context: String) -> Resource:
         resource.resource_name = str(dictionary.get("resource_name"))
     if dictionary.has("properties") and not apply_properties(resource, dictionary.get("properties"), context + ".properties"):
         return null
+    # Ordered builder calls run after property writes so resources whose state is
+    # populated only through methods (e.g. Curve.add_point, Gradient.add_point,
+    # SceneReplicationConfig.add_property) can be inlined without a separate op.
+    if dictionary.has("method_calls") and not invoke_method_calls(resource, dictionary.get("method_calls"), context + ".method_calls"):
+        return null
     return resource
+
+func invoke_method_calls(target: Object, raw_calls: Variant, context: String) -> bool:
+    if not (raw_calls is Array):
+        utils_script.log_error(context + " must be an array")
+        return false
+    for index in range(raw_calls.size()):
+        var raw_call = raw_calls[index]
+        if not (raw_call is Dictionary):
+            utils_script.log_error("%s[%d] must be a dictionary" % [context, index])
+            return false
+        var method_name := str(raw_call.get("method", ""))
+        if method_name.is_empty():
+            utils_script.log_error("%s[%d] requires method" % [context, index])
+            return false
+        if not target.has_method(method_name):
+            utils_script.log_error("%s[%d]: %s has no method %s" % [context, index, target.get_class(), method_name])
+            return false
+        var raw_args = raw_call.get("args", [])
+        var decoded_args = decode(raw_args, "%s[%d].args" % [context, index])
+        if not (decoded_args is Array):
+            return false
+        var result = target.callv(method_name, decoded_args)
+        if bool(raw_call.get("expect_ok", false)) and (not (result is int) or result != OK):
+            utils_script.log_error("%s[%d]: %s expected OK but returned %s" % [context, index, method_name, str(result)])
+            return false
+    return true
+
+func _decode_gradient(raw: Variant, context: String) -> Gradient:
+    if not (raw is Dictionary):
+        utils_script.log_error(context + ".__gradient must be a dictionary")
+        return null
+    var spec := raw as Dictionary
+    var gradient := Gradient.new()
+    if spec.has("interpolation_mode"):
+        gradient.interpolation_mode = int(spec.get("interpolation_mode"))
+    if spec.has("interpolation_color_space"):
+        gradient.interpolation_color_space = int(spec.get("interpolation_color_space"))
+    if spec.has("points"):
+        var points = spec.get("points")
+        if not (points is Array):
+            utils_script.log_error(context + ".points must be an array")
+            return null
+        var offsets := PackedFloat32Array()
+        var colors := PackedColorArray()
+        for index in range(points.size()):
+            var point = points[index]
+            if not (point is Dictionary):
+                utils_script.log_error("%s.points[%d] must be a dictionary" % [context, index])
+                return null
+            offsets.append(float(point.get("offset", 0.0)))
+            var color = decode(point.get("color", {"__type": "Color", "r": 1, "g": 1, "b": 1}), "%s.points[%d].color" % [context, index])
+            if not (color is Color):
+                utils_script.log_error("%s.points[%d].color must decode to a Color" % [context, index])
+                return null
+            colors.append(color)
+        gradient.offsets = offsets
+        gradient.colors = colors
+        return gradient
+    if spec.has("offsets") and spec.has("colors"):
+        var raw_offsets = decode(spec.get("offsets"), context + ".offsets")
+        var raw_colors = decode(spec.get("colors"), context + ".colors")
+        if not (raw_offsets is Array) or not (raw_colors is Array) or raw_offsets.size() != raw_colors.size():
+            utils_script.log_error(context + ".offsets and .colors must be equal-length arrays")
+            return null
+        gradient.offsets = PackedFloat32Array(raw_offsets)
+        gradient.colors = PackedColorArray(raw_colors)
+        return gradient
+    utils_script.log_error(context + ".__gradient requires points, or offsets + colors")
+    return null
+
+func _decode_curve(raw: Variant, context: String) -> Curve:
+    if not (raw is Dictionary):
+        utils_script.log_error(context + ".__curve must be a dictionary")
+        return null
+    var spec := raw as Dictionary
+    var curve := Curve.new()
+    if spec.has("min_value"):
+        curve.min_value = float(spec.get("min_value"))
+    if spec.has("max_value"):
+        curve.max_value = float(spec.get("max_value"))
+    if spec.has("bake_resolution"):
+        curve.bake_resolution = int(spec.get("bake_resolution"))
+    var points = spec.get("points", [])
+    if not (points is Array):
+        utils_script.log_error(context + ".points must be an array")
+        return null
+    for index in range(points.size()):
+        var point = points[index]
+        if not (point is Dictionary):
+            utils_script.log_error("%s.points[%d] must be a dictionary" % [context, index])
+            return null
+        curve.add_point(
+            Vector2(float(point.get("x", 0.0)), float(point.get("y", 0.0))),
+            float(point.get("left_tangent", 0.0)),
+            float(point.get("right_tangent", 0.0)),
+            int(point.get("left_mode", 0)),
+            int(point.get("right_mode", 0))
+        )
+    return curve
 
 func _load_resource(raw_path: Variant, context: String) -> Resource:
     var resource_path := _normalize_res_path(raw_path)

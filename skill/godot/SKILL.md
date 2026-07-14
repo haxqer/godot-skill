@@ -1,6 +1,6 @@
 ---
 name: godot
-description: Godot project development, inspection, structured resource and project-setting editing, tileset and tilemap authoring, spritesheet and keyframe animation, audio bus routing, import auditing, debugging, unit-test running, deterministic input and screenshot scenarios, runtime and performance validation, architecture design, creative content integration, and export preparation. Use when Codex needs to inspect or modify Godot projects, build scenes and UI, wire scripts and signals, paint TileMapLayer levels, build AnimationPlayer clips or SpriteFrames atlases, set up audio buses, edit InputMap or autoloads, run GUT/GdUnit4 tests, validate GDScript/C#/GDExtension/editor plugins, test gameplay flows, add project-native art/music/story content, export mobile/web/desktop/server/visionOS builds, create mesh libraries, or repair resource UIDs. Designed for Godot 4.7 and compatible with Godot 4.x; prefer host-native Godot tools when exposed and use the bundled portable workflows otherwise.
+description: Godot project development, inspection, structured resource and project-setting editing, tileset and tilemap authoring, GridMap painting, theme and stylebox authoring, spritesheet and keyframe animation, audio bus routing, 3D mesh-collision and CSG baking, sprite-silhouette collision, 2D/3D navigation-mesh baking, glTF export, global shader uniforms, multiplayer replication config, import auditing, debugging, unit-test running, deterministic input and screenshot scenarios, runtime and performance validation, architecture design, creative content integration, and export preparation. Use when Codex needs to inspect or modify Godot projects, build scenes and UI, wire scripts and signals, paint TileMapLayer or GridMap levels, author Theme resources, build AnimationPlayer clips or SpriteFrames atlases, set up audio buses, bake mesh/CSG collision or navigation meshes, trace collision from sprites, export glTF, edit InputMap, autoloads, or shader globals, run GUT/GdUnit4 tests, validate GDScript/C#/GDExtension/editor plugins, test gameplay flows, add project-native art/music/story content, export mobile/web/desktop/server/visionOS builds, create mesh libraries, or repair resource UIDs. Designed for Godot 4.7 and compatible with Godot 4.x; prefer host-native Godot tools when exposed and use the bundled portable workflows otherwise.
 ---
 
 # Godot
@@ -22,7 +22,8 @@ Use this skill to inspect and modify Godot projects with the bundled workflows, 
 - Require a local `godot` CLI with shell access before using the bundled dispatcher fallback, runtime runner, or CLI export wrapper. The bundled APIs are designed against the current stable Godot docs and verified on Godot `4.7` (compatible with Godot 4.x).
 - Read `references/export_targets.md` only when the task involves packaging, signing, or shipping builds for Android, iOS, Web, Windows, or macOS.
 - Read `references/debugging.md` when the task involves running the project, reading the Godot debugger's errors, and fixing them.
-- Read `references/automation_api.md` when using inspection, `resource_batch`, `project_batch`, tileset/tilemap/animation/audio-bus authoring, unit-test running, import audit, scenario, environment probe, validation, or export preflight APIs.
+- Read `references/automation_api.md` when using inspection, `resource_batch`, `project_batch`, tileset/tilemap/gridmap/theme/animation/audio-bus authoring, collision/CSG/navmesh baking, glTF export, replication config, unit-test running, import audit, scenario, environment probe, validation, or export preflight APIs.
+- Read `references/authoring_recipes.md` when the task involves shaders/ShaderMaterial, particles, environment/sky, fonts, multiplayer replication, 3D import options, GDExtension, or feature tags — it gives the generic-op recipes and lists what is editor-only and must not be attempted headlessly (LightmapGI/occluder/reflection-probe bakes, VisualShader graphs).
 - Read `references/vfx_2d.md` when the task involves 2D lighting, particles, parallax, trails, paths, or tile-based levels — it also lists the 4.3+ node deprecations (`TileMap` → `TileMapLayer`, `ParallaxBackground` → `Parallax2D`).
 - Read `references/tween.md` when adding code-driven juice (punches, fades, shakes); Tweens are runtime-only and ship inside scripts via `attach_script`.
 - Read `references/localization.md` when translating game text or wiring translation files (note: POT template generation is editor-only in Godot 4.x).
@@ -47,7 +48,7 @@ godot --headless --path /absolute/path/to/project \
   scene_batch '{"scene_path":"scenes/main.tscn","create_if_missing":true,"root_node_type":"Node2D","actions":[{"type":"add_node","node_type":"Camera2D","node_name":"Camera"}]}'
 ```
 
-- Replace `scene_batch` with any supported operation: `inspect_project`, `inspect_scene`, `inspect_resource`, `resource_batch`, `project_batch`, `audit_imports`, `set_import_options`, `build_tileset`, `paint_tilemap`, `build_animation`, `build_animation_tree`, `setup_audio_buses`, `scene_batch`, `create_scene`, `add_node`, `instantiate_scene`, `configure_node`, `configure_control`, `attach_script`, `connect_signal`, `disconnect_signal`, `remove_node`, `reparent_node`, `reorder_node`, `load_sprite`, `build_sprite_frames`, `save_scene`, `export_mesh_library`, `get_uid`, `resave_resources`, or `check_project`.
+- Replace `scene_batch` with any supported operation: `inspect_project`, `inspect_scene`, `inspect_resource`, `resource_batch`, `project_batch`, `audit_imports`, `set_import_options`, `build_tileset`, `paint_tilemap`, `paint_gridmap`, `build_theme`, `bake_collision`, `collision_from_sprite`, `bake_csg`, `gltf_export`, `build_replication_config`, `build_animation`, `build_animation_tree`, `setup_audio_buses`, `scene_batch`, `create_scene`, `add_node`, `instantiate_scene`, `configure_node`, `configure_control`, `attach_script`, `connect_signal`, `disconnect_signal`, `remove_node`, `reparent_node`, `reorder_node`, `load_sprite`, `build_sprite_frames`, `save_scene`, `export_mesh_library`, `get_uid`, `resave_resources`, or `check_project`. Navigation-mesh baking is a `resource_batch` `bake_navmesh` action; global shader uniforms are `project_batch` `set_shader_global` actions.
 - Every dispatcher operation exits `0` on success and `1` after any logged error, so shell callers can gate on the exit code.
 - Pass parameters as a single JSON object using the snake_case field names expected by the bundled GDScript.
 - The dispatcher covers file, scene, and static-validation operations. It does not run gameplay or export builds: use the runtime runner (`scripts/debug/run_project.py`) to run and capture debugger errors, and the export wrapper (`scripts/export/export_project.py`) for builds.
@@ -172,6 +173,11 @@ python3 /absolute/path/to/godot/scripts/export/export_project.py \
 - Use `audit_imports` or `scripts/import/import_project.py` to detect missing, invalid, stale, and orphaned import artifacts and optionally reimport first.
 - Use `validate_project.py` for GDScript/C#/GDExtension/plugin validation, and `run_scenario.py` for deterministic behavior, screenshot, log, and performance checks.
 - Use `build_tileset` to author a `TileSet` (atlas sources, exposed tiles, per-tile collision/custom-data/terrains via `tile_defaults`) and `paint_tilemap` to assign it and paint/fill/erase cells or run `terrain_fills` autotiling on a `TileMapLayer`. Tiles without collision polygons are decorative — pass `"collision": "full_cell"` for solid ground.
+- Use `paint_gridmap` to paint a `GridMap` (the 3D parallel to `paint_tilemap`) from a `MeshLibrary` built with `export_mesh_library`.
+- Use `build_theme` to author a `Theme` grouped by control type (inline styleboxes, hex or typed colors, type variations); wire it project-wide with `project_batch` `set_setting` on `gui/theme/custom`.
+- Use `bake_collision` to generate a `StaticBody3D`/`CollisionShape3D` from a `MeshInstance3D` (trimesh/convex/multi_convex), `collision_from_sprite` to trace `CollisionPolygon2D` shapes from a sprite's alpha, and `bake_csg` to freeze a `CSGShape3D` tree into a static mesh (+ optional collision, optional in-place replacement).
+- Use `resource_batch` `bake_navmesh` to bake a `NavigationPolygon` (2D) or `NavigationMesh` (3D) from procedural outlines/faces (sync bake, headless-safe), then assign it to a `NavigationRegion2D/3D` with `configure_node`.
+- Use `gltf_export` to write a `.glb`/`.gltf` from an edited scene, `project_batch` `set_shader_global` to author `[shader_globals]` uniforms, and `build_replication_config` to author a `SceneReplicationConfig` for a `MultiplayerSynchronizer`.
 - Use `build_animation_tree` for AnimationPlayer-backed state machines (states, transitions, auto Start wiring), and `set_import_options` to patch `.import` params such as audio loop modes before a reimport.
 - Use `build_sprite_frames` with `spritesheet` + `grid` + `animations` to slice an atlas into multiple named animations with per-frame durations; the legacy one-file-per-frame form still works.
 - Use `build_animation` for AnimationPlayer keyframe clips (value/method/bezier tracks) saved standalone and/or attached through an `AnimationLibrary`.
@@ -182,7 +188,8 @@ python3 /absolute/path/to/godot/scripts/export/export_project.py \
 
 - Use plain JSON scalars, arrays, and objects for ordinary values.
 - Use `{"__resource":"res://path/to/resource"}` to load a Godot resource before assignment.
-- Use `{"__resource_type":"InputEventKey","properties":{"physical_keycode":32}}` to instantiate and configure a Resource value.
+- Use `{"__resource_type":"InputEventKey","properties":{"physical_keycode":32}}` to instantiate and configure a Resource value. Add an ordered `"method_calls":[{"method":"add_point","args":[...]}]` for builder-only sub-resources.
+- Use `{"__curve":{"points":[{"x":0,"y":0},{"x":1,"y":1}]}}` and `{"__gradient":{"points":[{"offset":0,"color":"#fff"},{"offset":1,"color":"#000"}]}}` to inline `Curve`/`Gradient` ramps (e.g. particle scale/color) without separate resource files.
 - Use typed wrappers for engine value types when the target property is not plain JSON:
   - `{"__type":"Vector2","x":10,"y":20}`
   - `{"__type":"Color","r":1,"g":0.5,"b":0.25,"a":1}`
@@ -204,6 +211,10 @@ python3 /absolute/path/to/godot/scripts/export/export_project.py \
 - `load_sprite`: load an existing texture resource into a `Sprite2D`, `Sprite3D`, or `TextureRect`.
 - `build_sprite_frames`: build or replace animations on an `AnimatedSprite2D` from `frames_dir`/`frame_paths`, or from a `spritesheet` + `grid` with an `animations` array (multiple named animations, per-frame `duration`), then optionally save the `SpriteFrames` resource to `resource_save_path`.
 - `paint_tilemap`: assign a `TileSet` and paint/fill/erase cells on a `TileMapLayer` node (also available inside `scene_batch`).
+- `paint_gridmap`: assign a `MeshLibrary` and paint/fill/erase cells (with orientation) on a `GridMap` node (also available inside `scene_batch`).
+- `bake_collision`: add a `StaticBody3D`/`CollisionShape3D` to a `MeshInstance3D` via trimesh/convex/multi_convex baking (owner-safe serialization; also in `scene_batch`).
+- `collision_from_sprite`: trace `CollisionPolygon2D` children from a sprite's alpha silhouette (also in `scene_batch`).
+- `bake_csg`: freeze a `CSGShape3D` tree into a static `ArrayMesh` (+ optional collision), optionally replacing the CSG node with a `MeshInstance3D`.
 - `build_animation`: build an `Animation` from declarative value/method/bezier tracks, save it standalone, and/or register it on an `AnimationPlayer` via an `AnimationLibrary`.
 - `build_tileset`: author a `TileSet` resource with atlas sources, exposed tiles, and physics/custom-data layers.
 - `setup_audio_buses`: author the project's `AudioBusLayout` (buses, sends, volumes, effects) and register it in project settings.
