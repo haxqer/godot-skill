@@ -97,9 +97,39 @@ func _apply_action(action: Dictionary, codec: RefCounted) -> bool:
             return _change_translation(action, true)
         "remove_translation":
             return _change_translation(action, false)
+        "set_shader_global":
+            return _set_shader_global(action, codec)
+        "clear_shader_global":
+            return _clear_shader_global(action)
         _:
             utils_script.log_error("Unsupported project_batch action: " + action_type)
             return false
+
+func _set_shader_global(action: Dictionary, codec: RefCounted) -> bool:
+    var global_name := str(action.get("name", ""))
+    var global_type := str(action.get("global_type", ""))
+    if global_name.is_empty() or global_type.is_empty():
+        utils_script.log_error("set_shader_global requires name and global_type (e.g. color, vec3, float)")
+        return false
+    if not action.has("value"):
+        utils_script.log_error("set_shader_global requires value")
+        return false
+    var value = codec.decode(action.get("value"), "set_shader_global.value")
+    if value == null and action.get("value") != null:
+        return false
+    # Global shader parameters persist as a {type, value} dictionary under the
+    # [shader_globals] section of project.godot.
+    ProjectSettings.set_setting("shader_globals/" + global_name, {"type": global_type, "value": value})
+    return true
+
+func _clear_shader_global(action: Dictionary) -> bool:
+    var global_name := str(action.get("name", ""))
+    if global_name.is_empty():
+        utils_script.log_error("clear_shader_global requires name")
+        return false
+    if ProjectSettings.has_setting("shader_globals/" + global_name):
+        ProjectSettings.clear("shader_globals/" + global_name)
+    return true
 
 func _add_input_action(action: Dictionary) -> bool:
     var action_name := str(action.get("action_name", ""))

@@ -102,9 +102,97 @@ func _apply_action(resource: Resource, action: Dictionary, codec: RefCounted) ->
             return true
         "call_method":
             return _call_method(resource, action, codec)
+        "bake_navmesh":
+            return _bake_navmesh(resource, action)
         _:
             utils_script.log_error("Unsupported resource_batch action: " + action_type)
             return false
+
+func _bake_navmesh(resource: Resource, action: Dictionary) -> bool:
+    if resource is NavigationPolygon:
+        var geom2d := NavigationMeshSourceGeometryData2D.new()
+        var traversable = action.get("traversable_outlines", [])
+        if not (traversable is Array) or traversable.is_empty():
+            utils_script.log_error("bake_navmesh requires a non-empty traversable_outlines for NavigationPolygon")
+            return false
+        for outline in traversable:
+            var points := _packed_vector2(outline, "bake_navmesh.traversable_outlines")
+            if points.size() < 3:
+                utils_script.log_error("bake_navmesh.traversable_outlines entries need at least 3 points")
+                return false
+            geom2d.add_traversable_outline(points)
+        for outline in action.get("obstruction_outlines", []):
+            var points := _packed_vector2(outline, "bake_navmesh.obstruction_outlines")
+            if points.size() < 3:
+                utils_script.log_error("bake_navmesh.obstruction_outlines entries need at least 3 points")
+                return false
+            geom2d.add_obstruction_outline(points)
+        NavigationServer2D.bake_from_source_geometry_data(resource, geom2d)
+        if resource.get_polygon_count() == 0:
+            utils_script.log_error("bake_navmesh produced no 2D polygons; check outlines and agent_radius/cell_size")
+            return false
+        return true
+
+    if resource is NavigationMesh:
+        var geom3d := NavigationMeshSourceGeometryData3D.new()
+        var faces = action.get("faces", [])
+        if faces is Array and not faces.is_empty():
+            var verts := _packed_vector3(faces, "bake_navmesh.faces")
+            if verts.size() < 3 or verts.size() % 3 != 0:
+                utils_script.log_error("bake_navmesh.faces must be triangles (a multiple of 3 vertices)")
+                return false
+            geom3d.add_faces(verts, Transform3D.IDENTITY)
+        for raw_mesh in action.get("source_meshes", []):
+            if not (raw_mesh is Dictionary):
+                utils_script.log_error("bake_navmesh.source_meshes entries must be dictionaries")
+                return false
+            var mesh_path := _normalize_res_path(raw_mesh.get("mesh", ""))
+            var mesh = ResourceLoader.load(mesh_path, "", ResourceLoader.CACHE_MODE_IGNORE)
+            if not (mesh is Mesh):
+                utils_script.log_error("bake_navmesh.source_meshes could not load Mesh: " + mesh_path)
+                return false
+            geom3d.add_mesh(mesh, Transform3D.IDENTITY)
+        if geom3d.get_vertices().is_empty():
+            utils_script.log_error("bake_navmesh requires faces or source_meshes for NavigationMesh")
+            return false
+        NavigationServer3D.bake_from_source_geometry_data(resource, geom3d)
+        if resource.get_polygon_count() == 0:
+            utils_script.log_error("bake_navmesh produced no 3D polygons; check geometry and agent settings")
+            return false
+        return true
+
+    utils_script.log_error("bake_navmesh target must be a NavigationPolygon or NavigationMesh, got " + resource.get_class())
+    return false
+
+func _packed_vector2(raw_outline: Variant, context: String) -> PackedVector2Array:
+    var points := PackedVector2Array()
+    if not (raw_outline is Array):
+        utils_script.log_error(context + " entries must be arrays of points")
+        return points
+    for raw_point in raw_outline:
+        if raw_point is Array and raw_point.size() == 2:
+            points.append(Vector2(float(raw_point[0]), float(raw_point[1])))
+        elif raw_point is Dictionary and raw_point.has("x") and raw_point.has("y"):
+            points.append(Vector2(float(raw_point.get("x")), float(raw_point.get("y"))))
+        else:
+            utils_script.log_error(context + " points must be [x,y] or {x,y}")
+            return PackedVector2Array()
+    return points
+
+func _packed_vector3(raw_points: Variant, context: String) -> PackedVector3Array:
+    var points := PackedVector3Array()
+    if not (raw_points is Array):
+        utils_script.log_error(context + " must be an array of points")
+        return points
+    for raw_point in raw_points:
+        if raw_point is Array and raw_point.size() == 3:
+            points.append(Vector3(float(raw_point[0]), float(raw_point[1]), float(raw_point[2])))
+        elif raw_point is Dictionary and raw_point.has("x") and raw_point.has("y") and raw_point.has("z"):
+            points.append(Vector3(float(raw_point.get("x")), float(raw_point.get("y")), float(raw_point.get("z"))))
+        else:
+            utils_script.log_error(context + " points must be [x,y,z] or {x,y,z}")
+            return PackedVector3Array()
+    return points
 
 func _call_method(resource: Resource, action: Dictionary, codec: RefCounted) -> bool:
     var method_name := str(action.get("method", ""))
