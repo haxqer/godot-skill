@@ -105,18 +105,30 @@ def test_preflight_reads_linux_server_preset() -> None:
         encoding="utf-8",
     )
     output_path = project_path.parent / "build/server.x86_64"
+    # --preflight-only exits 1 when preflight reports errors, which is the
+    # expected outcome wherever export templates are not installed (CI).
     payload = run_wrapper(
         [
             str(project_path),
             "Linux Server",
             str(output_path),
             "--preflight-only",
-        ]
+        ],
+        allowed_returncodes=(0, 1),
     )
 
-    assert payload["preflight"]["ok"] is True
-    assert payload["preflight"]["platform"] == "Linux"
-    assert "Linux Server" in payload["preflight"]["available_presets"]
+    preflight = payload["preflight"]
+    # What this test is about: the preset is parsed out of export_presets.cfg.
+    assert preflight["platform"] == "Linux"
+    assert "Linux Server" in preflight["available_presets"]
+    assert preflight["preset"]["name"] == "Linux Server"
+    # Whether preflight passes overall depends on the host's template install,
+    # so assert the exact remaining blocker instead of skipping the check.
+    if preflight["export_templates"]:
+        assert preflight["ok"] is True, preflight
+    else:
+        assert preflight["ok"] is False, preflight
+        assert preflight["errors"] == ["Matching Godot export templates were not found"], preflight
 
 
 def test_missing_project_file_fails_cleanly() -> None:
@@ -154,14 +166,14 @@ def cleanup_temp_roots() -> None:
         shutil.rmtree(TEMP_ROOTS.pop(), ignore_errors=True)
 
 
-def run_wrapper(args: list[str]) -> dict:
+def run_wrapper(args: list[str], allowed_returncodes: tuple[int, ...] = (0,)) -> dict:
     result = subprocess.run(
         ["python3", str(EXPORT_WRAPPER), *args],
         capture_output=True,
         text=True,
         check=False,
     )
-    if result.returncode != 0:
+    if result.returncode not in allowed_returncodes:
         raise AssertionError(
             f"Export wrapper failed ({result.returncode}).\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
         )

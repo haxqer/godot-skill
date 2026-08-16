@@ -25,6 +25,15 @@ jobs:
         with:
           python-version: '3.12'
 
+      # The scenario runner deliberately drops --headless when a scenario has a
+      # screenshot step, because the headless dummy renderer cannot produce a
+      # real image. That needs a display, so the suite runs under Xvfb.
+      - name: Install Xvfb
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends xvfb
+
       # The editor build, not an export template: the suite runs GDScript
       # through `--headless --script` and never exports, so templates are not
       # needed. Cached because it is a ~70 MB download.
@@ -62,7 +71,7 @@ jobs:
           esac
 
       - name: Run the test suite
-        run: ./scripts/run_tests.sh
+        run: xvfb-run -a --server-args="-screen 0 1280x720x24" ./scripts/run_tests.sh
 
   package:
     needs: test
