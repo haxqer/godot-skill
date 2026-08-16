@@ -1,0 +1,125 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # Keep in step with the version the skill is verified against (SKILL.md).
+  GODOT_VERSION: 4.7-stable
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # The editor build, not an export template: the suite runs GDScript
+      # through `--headless --script` and never exports, so templates are not
+      # needed. Cached because it is a ~70 MB download.
+      - name: Cache the Godot binary
+        uses: actions/cache@v4
+        with:
+          path: ~/godot-bin
+          key: godot-${{ env.GODOT_VERSION }}-linux-x86_64
+
+      - name: Install Godot
+        run: |
+          set -euo pipefail
+          mkdir -p ~/godot-bin
+          if [ ! -x "$HOME/godot-bin/godot" ]; then
+            url="https://github.com/godotengine/godot-builds/releases/download/${GODOT_VERSION}/Godot_v${GODOT_VERSION}_linux.x86_64.zip"
+            curl -fsSL -o /tmp/godot.zip "$url"
+            unzip -q -o /tmp/godot.zip -d /tmp/godot
+            mv /tmp/godot/Godot_v*_linux.x86_64 "$HOME/godot-bin/godot"
+            chmod +x "$HOME/godot-bin/godot"
+          fi
+          echo "$HOME/godot-bin" >> "$GITHUB_PATH"
+
+      # A missing Godot would silently turn the whole suite into skips, so the
+      # binary is confirmed before anything depends on it.
+      - name: Confirm Godot is usable
+        run: |
+          set -euo pipefail
+          # Captured, not piped into grep: `grep -q` exits on first match and
+          # SIGPIPEs the writer, which `pipefail` then reports as a failure.
+          version="$(godot --headless --version)"
+          echo "$version"
+          case "$version" in
+            "${GODOT_VERSION%-*}."*) ;;
+            *) echo "Godot version does not match ${GODOT_VERSION}"; exit 1 ;;
+          esac
+
+      - name: Run the test suite
+        run: ./scripts/run_tests.sh
+
+  package:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the release package
+        run: ./scripts/package_skill.sh
+
+      # package_skill.sh copies skill/godot into the archive. If that copy ever
+      # breaks, the zip would still be produced — just empty or partial — so its
+      # contents are checked rather than its existence.
+      - name: Verify the archive
+        run: |
+          set -euo pipefail
+          test -f dist/godot.zip
+          # Listed once into a variable rather than piped into each grep:
+          # `grep -q` exits on first match and SIGPIPEs unzip, which `pipefail`
+          # would then report as a failed step on a perfectly good archive.
+          listing="$(unzip -l dist/godot.zip)"
+          for required in 'godot/SKILL.md' 'godot/scripts/core/dispatcher.gd'; do
+            grep -q "$required" <<<"$listing" || { echo "Archive is missing $required"; exit 1; }
+          done
+          if grep -qE '__pycache__|\.pyc$|\.DS_Store' <<<"$listing"; then
+            echo "Archive contains build junk that package_skill.sh should have stripped"
+            exit 1
+          fi
+          echo "Archive entries: $(tail -1 <<<"$listing")"
+
+      # Available on every run so a PR can be checked before tagging.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: godot-skill-zip
+          path: dist/godot.zip
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the release package
+        run: ./scripts/package_skill.sh
+
+      - name: Attach godot.zip to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/godot.zip --clobber
+          else
+            gh release create "$TAG" dist/godot.zip --title "$TAG" --generate-notes
+          fi

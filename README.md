@@ -8,6 +8,8 @@ The distributable skill payload lives in [`skill/godot/`](skill/godot/). That fo
 
 - `skill/godot/`: the actual skill payload
 - `scripts/package_skill.sh`: builds a release zip with a top-level `godot/` folder
+- `scripts/run_tests.sh`: runs every module in `tests/`, exiting non-zero if any fails
+- `.github/workflows/ci.yml`: installs Godot, runs the suite, and attaches `godot.zip` to a tagged release
 - `README.md`: repository documentation for GitHub users
 
 ## Build A Release Package
@@ -20,6 +22,34 @@ This writes:
 
 - `dist/godot/`: staged skill payload
 - `dist/godot.zip`: release archive ready to install
+
+`dist/` is a build output and is deliberately not tracked in git — it would
+duplicate every byte of `skill/godot/` and add a binary that churns on each edit.
+The archive is published as a GitHub Release asset instead.
+
+## Continuous Integration
+
+`.github/workflows/ci.yml` runs on pushes to `main`, on pull requests, and on
+`v*` tags:
+
+- **test** — installs the pinned Godot build (`GODOT_VERSION` in the workflow),
+  confirms it actually runs, then runs `./scripts/run_tests.sh`. The Godot-backed
+  tests skip themselves when the binary is missing, so the version check is what
+  keeps a broken install from turning the suite into a silent pass.
+- **package** — builds the archive and verifies its contents (expected entries
+  present, no `__pycache__`/`.pyc`/`.DS_Store`), then uploads it as a workflow
+  artifact so a pull request can be checked before tagging.
+- **release** — on a `v*` tag only, attaches `dist/godot.zip` to the matching
+  GitHub Release, creating the release if it does not exist yet.
+
+To cut a release: push a `v*` tag. Keep `GODOT_VERSION` in step with the version
+the skill is verified against.
+
+Run the same checks locally with:
+
+```bash
+./scripts/run_tests.sh
+```
 
 ## Install
 
