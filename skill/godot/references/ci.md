@@ -54,6 +54,6 @@ jobs:
    mv /tmp/tpl/templates/* ~/.local/share/godot/export_templates/${VERSION/-/.}/
    ```
 2. `godot --headless --import` before validating or exporting — fresh checkouts have no `.godot/` import cache.
-3. Gate merges on the bundled validators: `validate_project.py` (static + C#) and `run_tests.py` (unit tests); both return non-zero on failure.
+3. Gate merges on the bundled validators: `validate_project.py` (static + C#) and `run_tests.py` (unit tests); both return non-zero on failure. `validate_project.py` attaches the local debugger, so it reports the same GDScript warnings the editor shows for every script in the project — add `--warnings-as-errors` to make CI fail on them, and expect an existing project's first strict run to surface a backlog.
 4. Export with `export_project.py` or raw `godot --headless --export-release "<preset>" <out>`. C# projects need the .NET editor image and a `--build-solutions` pre-step.
 5. Keep secrets (Android keystores, Apple certs) in CI secret storage and reference them from `export_presets.cfg` via environment overrides rather than committing them.

@@ -450,6 +450,8 @@ python3 scripts/debug/validate_project.py /absolute/project --pretty
 
 `validate_project.py` loads GDScript, scenes, shaders, resources, GDExtensions, and editor plugins. When a root `.csproj` exists, it also runs Godot's `--build-solutions`; override with `--csharp always|never`.
 
+It runs Godot with `-d --ignore-error-breaks`, so its report includes the GDScript warnings the editor shows — which a plain headless run never prints — for **every** script in the project, not just the ones a boot happens to load. Output carries `counts` and `diagnostics` (same shape as `run_project.py`) alongside the file-level `static` summary, and `ok` is false whenever an error-level diagnostic appears even if every file technically loaded. Flags: `--warnings-as-errors` to fail on warnings, `--no-warnings` to drop them from the report, `--no-debugger` to reproduce the old warning-free behaviour.
+
 ## Scenario Runner
 
 Create a scenario JSON and run it with `scripts/debug/run_scenario.py PROJECT SCENARIO`. The wrapper uses a rendered window when a screenshot step exists and headless mode otherwise. Force the choice with `--headless` or `--no-headless`.

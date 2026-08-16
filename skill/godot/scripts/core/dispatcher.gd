@@ -43,7 +43,21 @@ func _init():
         quit(1)
         return
 
-    var instance = _instantiate_operation(operation)
+    var script_path := _script_path_for(operation)
+    if script_path.is_empty():
+        utils_script.log_error("Unknown operation: " + operation)
+        quit(1)
+        return
+
+    # Reject parameter keys the operation never reads. Without this a misspelled
+    # or invented key is silently ignored and the op falls back to its default —
+    # e.g. add_node with "parent_path" instead of "parent_node_path" parents the
+    # node to the scene root, saves the file, and reports success.
+    if not ("--skip-param-check" in args) and not _validate_params(script_path, operation, params):
+        quit(1)
+        return
+
+    var instance = _instantiate_operation(script_path)
     if instance == null:
         quit(1)
         return
@@ -66,11 +80,77 @@ func _run(instance: Object, params: Dictionary) -> void:
     # exit code instead of parsing stderr.
     quit(1 if utils_script.had_errors else 0)
 
-func _instantiate_operation(operation: String) -> Object:
-    var script_path := _script_path_for(operation)
-    if script_path.is_empty():
-        utils_script.log_error("Unknown operation: " + operation)
-        return null
+func _validate_params(script_path: String, operation: String, params: Dictionary) -> bool:
+    var allowed := _allowed_param_keys(script_path)
+    if allowed.is_empty():
+        # Sources unreadable (packaged oddly?) — never block the op over that.
+        return true
+    var ok := _reject_unknown_keys(params, allowed, operation, "")
+    # scene_batch / resource_batch / project_batch pass each entry of "actions"
+    # through the same implementation, so the same key set applies. Free-form
+    # value dictionaries ("properties", "constants", ...) are deliberately never
+    # descended into: their keys are user data, not operation parameters.
+    if params.get("actions") is Array:
+        var index := 0
+        for entry in params["actions"]:
+            if entry is Dictionary:
+                ok = _reject_unknown_keys(entry, allowed, operation, "actions[%d]." % index) and ok
+            index += 1
+    return ok
+
+func _reject_unknown_keys(params: Dictionary, allowed: Dictionary, operation: String, prefix: String) -> bool:
+    var ok := true
+    for key in params.keys():
+        var name := str(key)
+        if allowed.has(name):
+            continue
+        ok = false
+        var message := "Unknown parameter for %s: %s%s" % [operation, prefix, name]
+        var suggestions := _nearest_keys(name, allowed)
+        if not suggestions.is_empty():
+            message += " (did you mean " + ", ".join(suggestions) + "?)"
+        utils_script.log_error(message)
+    return ok
+
+func _nearest_keys(name: String, allowed: Dictionary) -> PackedStringArray:
+    var scored: Array = []
+    for candidate in allowed.keys():
+        var score: float = name.similarity(str(candidate))
+        if score >= 0.5:
+            scored.append({"key": str(candidate), "score": score})
+    scored.sort_custom(func(a, b): return a.score > b.score)
+    var best := PackedStringArray()
+    for entry in scored.slice(0, 3):
+        best.append(entry.key)
+    return best
+
+func _allowed_param_keys(script_path: String) -> Dictionary:
+    # Derived from the sources rather than a hand-maintained table: every key the
+    # operation (and everything it preloads) actually reads is allowed, so this
+    # can flag an unknown key but can never reject a supported one, and new
+    # operations need no registration.
+    var keys := {}
+    var key_regex := RegEx.create_from_string('\\.(?:get|has)\\(\\s*"([A-Za-z_][A-Za-z_0-9]*)"')
+    var preload_regex := RegEx.create_from_string('preload\\(\\s*"([^"]+)"')
+    var pending: Array[String] = [script_path.simplify_path()]
+    var seen := {}
+    while not pending.is_empty():
+        var path: String = pending.pop_back()
+        if seen.has(path):
+            continue
+        seen[path] = true
+        if not FileAccess.file_exists(path):
+            continue
+        var source := FileAccess.get_file_as_string(path)
+        if source.is_empty():
+            continue
+        for match_result in key_regex.search_all(source):
+            keys[match_result.get_string(1)] = true
+        for match_result in preload_regex.search_all(source):
+            pending.append(path.get_base_dir().path_join(match_result.get_string(1)).simplify_path())
+    return keys
+
+func _instantiate_operation(script_path: String) -> Object:
     var operation_script = load(script_path)
     if not (operation_script is GDScript):
         utils_script.log_error("Could not load script for operation at path: " + script_path)

@@ -50,7 +50,7 @@ godot --headless --path /absolute/path/to/project \
 
 - Replace `scene_batch` with any supported operation: `inspect_project`, `inspect_scene`, `inspect_resource`, `resource_batch`, `project_batch`, `audit_imports`, `set_import_options`, `build_tileset`, `paint_tilemap`, `paint_gridmap`, `build_theme`, `bake_collision`, `collision_from_sprite`, `bake_csg`, `gltf_export`, `build_replication_config`, `build_animation`, `build_animation_tree`, `setup_audio_buses`, `scene_batch`, `create_scene`, `add_node`, `instantiate_scene`, `configure_node`, `configure_control`, `attach_script`, `connect_signal`, `disconnect_signal`, `remove_node`, `reparent_node`, `reorder_node`, `load_sprite`, `build_sprite_frames`, `save_scene`, `export_mesh_library`, `get_uid`, `resave_resources`, or `check_project`. Navigation-mesh baking is a `resource_batch` `bake_navmesh` action; global shader uniforms are `project_batch` `set_shader_global` actions.
 - Every dispatcher operation exits `0` on success and `1` after any logged error, so shell callers can gate on the exit code.
-- Pass parameters as a single JSON object using the snake_case field names expected by the bundled GDScript.
+- Pass parameters as a single JSON object using the snake_case field names expected by the bundled GDScript. A key the operation does not read is rejected with the nearest valid names suggested (`Unknown parameter for add_node: parent_path (did you mean parent_node_path, ...)`), and nothing is written — an unrecognised key used to be ignored silently, so the operation fell back to its default and still reported success. The same check applies to each entry of a batch `actions` array; the free-form value dictionaries inside a parameter (`properties`, `constants`, `colors`, …) are never checked, since those keys are project data. `--skip-param-check` after the JSON disables the check.
 - The dispatcher covers file, scene, and static-validation operations. It does not run gameplay or export builds: use the runtime runner (`scripts/debug/run_project.py`) to run and capture debugger errors, and the export wrapper (`scripts/export/export_project.py`) for builds.
 
 ### Run And Capture Debugger Errors
@@ -63,19 +63,21 @@ python3 /absolute/path/to/godot/scripts/debug/run_project.py \
 
 - Runs the project headlessly for a bounded number of frames, captures the exact stdout/stderr the Godot debugger prints, and returns JSON: `ok`, `counts`, and a `diagnostics` array where each entry has `severity`, `category`, `message`, `file`, `line`, `function`, `stack`, and a `suggested_fix`.
 - Pass an optional scene as the second positional argument (`res://scenes/level.tscn`) to run and debug just that scene. Add `--no-headless` when an error only appears with real rendering, `--log-file <path>` to persist the raw log, and `--no-warnings` to drop warnings.
-- Never runs Godot with `-d`; that flag opens an interactive debugger prompt that blocks on stdin. See `references/debugging.md` for the full run→diagnose→fix→re-run loop and a message→cause→fix table.
+- Runs Godot with `-d --ignore-error-breaks`. GDScript warnings (unused variable, shadowed variable, integer division, standalone expression, …) reach stdout only through the script debugger channel, so a plain headless run reports none of what the editor's Errors panel shows; `--ignore-error-breaks` keeps `-d` from stopping at an interactive `debug>` prompt on the first error. Pass `--no-debugger` to opt out. See `references/debugging.md` for the full run→diagnose→fix→re-run loop and a message→cause→fix table.
 
 ### Validate Scripts And Scenes Without Running
 
 ```bash
-godot --headless --path /absolute/path/to/project \
+godot --headless --debug --ignore-error-breaks --path /absolute/path/to/project \
   --script /absolute/path/to/godot/scripts/core/dispatcher.gd \
   check_project '{}' 2>&1 \
   | python3 /absolute/path/to/godot/scripts/debug/godot_log_parser.py -
 ```
 
-- `check_project` statically loads every GDScript, scene, shader, resource, GDExtension, and editor plugin (or just a `{"project_path":"subdir"}` subtree) and prints a JSON summary of failures. Piping its combined output through `godot_log_parser.py` yields line-level parse-error diagnostics.
-- Run `python3 scripts/debug/validate_project.py /absolute/project --pretty` for the comprehensive pass, including C# solution builds when a `.csproj` exists.
+- `check_project` statically loads every GDScript, scene, shader, resource, GDExtension, and editor plugin (or just a `{"project_path":"subdir"}` subtree) and prints a JSON summary of failures. Piping its combined output through `godot_log_parser.py` yields line-level diagnostics. Keep `--debug --ignore-error-breaks` on the command: because this loads every file, it is the pass that reports the warnings of every script, and without it Godot emits no warnings at all.
+- A `failed_count` of 0 is not by itself a pass. Godot degrades gracefully where the editor is fatal (a scene with a missing `[ext_resource]` still loads and instantiates), so read the parsed diagnostics too.
+- Shaders are compiled, not just loaded: `check_project` assigns each `.gdshader` to a `ShaderMaterial` to force the compile, because `load()` alone accepts a file full of syntax errors. The resulting `SHADER ERROR:` carries no path of its own, so the op prints a `Compiling shader: <path>` marker that `godot_log_parser.py` uses to attribute it — keep the two on the same captured stream.
+- Run `python3 scripts/debug/validate_project.py /absolute/project --pretty` for the comprehensive pass: it runs `check_project` with the debugger attached, parses the captured log into `counts`/`diagnostics`, refuses to report `ok` while any error-level diagnostic is present, and builds C# solutions when a `.csproj` exists. Add `--warnings-as-errors` to make warnings fail the run.
 - Use `godot_log_parser.py` on its own to structure any Godot log you already have: `python3 /absolute/path/to/godot/scripts/debug/godot_log_parser.py path/to/run.log`.
 
 ### Probe And Run Deterministic Scenarios
@@ -99,6 +101,7 @@ python3 /absolute/path/to/godot/scripts/export/export_project.py \
 ```
 
 - The wrapper resolves absolute paths, creates the output directory, and shells out to `godot --headless --path ... --export-release ...`.
+- After a run that exits `0` it verifies an artifact actually exists at the output path and fails otherwise. Godot's exporter has reported success while writing nothing (a missing template variant, an unwritable target), so the exit code alone is not proof of a build.
 - Run with `--preflight-only` before changing or executing a preset. Real exports preflight by default; use `--skip-preflight` only after independently verifying the environment.
 - Pass `--mode debug` for smoke builds, `--mode pack` for a `.pck`/ZIP data export, or `--mode patch --patches base.pck` for a changed-files patch.
 - Platform support comes from the preset name already defined in `export_presets.cfg`. Common platforms include Android, iOS, Web, Windows Desktop, Linux, macOS, dedicated server presets, and visionOS.
@@ -145,7 +148,7 @@ python3 /absolute/path/to/godot/scripts/export/export_project.py \
 3. When the host exposes input, browser, window, screenshot, or desktop automation tools, use them to interact with the running game so you can verify the changed feature in a live session instead of relying only on static inspection.
 4. Re-run the same command after fixing and confirm `"ok": true` with `counts.errors == 0` and `counts.parse_errors == 0`. Do not assume the fix worked — the runner is the check. A `"timed_out": true` result is itself a finding (a hang or infinite loop).
 5. Do not stop at a successful launch. Verify the implemented behavior in the running game, then read the diagnostics from the validation run and fix any reported `error` or `warning` before you finish. For a fast whole-project sanity pass without running gameplay, use the `check_project` operation to load every script and scene and surface parse/load failures; widen coverage for code paths a short boot never reaches by running the specific scene or raising `--quit-after`.
-6. Never launch Godot with `-d` for automation; its interactive debugger prompt blocks on stdin (the runner already avoids this). If a full interactive test is not possible in the current environment, still launch the project when feasible, perform the deepest smoke test available, and state exactly what you could not verify.
+6. Launch Godot with `-d --ignore-error-breaks`, never `-d` on its own: without `-d` the engine reports no GDScript warnings at all, and without `--ignore-error-breaks` the local debugger stops at an interactive `debug>` prompt on the first error (the bundled runners already pass both and redirect stdin from `/dev/null`). If a full interactive test is not possible in the current environment, still launch the project when feasible, perform the deepest smoke test available, and state exactly what you could not verify.
 
 ### Prepare And Export Builds
 
@@ -183,6 +186,7 @@ python3 /absolute/path/to/godot/scripts/export/export_project.py \
 - Use `build_animation` for AnimationPlayer keyframe clips (value/method/bezier tracks) saved standalone and/or attached through an `AnimationLibrary`.
 - Use `setup_audio_buses` to create the Master/Music/SFX routing, save the `AudioBusLayout`, and register it in project settings.
 - Use `scripts/test/run_tests.py` to run a project's GUT or GdUnit4 suite headlessly with normalized exit codes; Godot has no built-in project test runner.
+- It refuses to run when the resolved tests directory holds no test scripts, and reports `test_script_count`. Both frameworks exit `0` when they collect nothing, so a wrong `--tests-dir` otherwise reads as a full pass. Pass `--allow-empty` when an empty suite is genuinely expected.
 
 ## Typed JSON Values
 
@@ -310,7 +314,7 @@ godot --headless --path /absolute/path/to/project \
 - Confirm that any new art, music, or story content matches the requested direction, or the pixel-art default when no direction was provided and no project style overrode it.
 - Confirm that generated sprite-like assets used transparent output first, or a flat pure-green chroma-key background plus local cutout as the fallback.
 - Confirm that frame animation work landed as a validated frame sequence or `SpriteFrames` resource, not an unusable loose asset dump.
-- Confirm that the final validation run logs contain no `error` or `warning` output. If they do, fix the issue and rerun before finishing. Capture the run with `scripts/debug/run_project.py` (or the host runtime tools) so the check is on structured diagnostics, not a glance at the log.
+- Confirm that the final validation run logs contain no `error` or `warning` output. If they do, fix the issue and rerun before finishing. Capture the run with `scripts/debug/run_project.py` (or the host runtime tools) so the check is on structured diagnostics, not a glance at the log. A boot-and-quit run only reports the files it loaded, so pair it with `scripts/debug/validate_project.py` for whole-project warning coverage. If a run reports zero warnings on a project the editor complains about, the debugger is not attached — check for a stray `--no-debugger`.
 - Confirm that every exported artifact came from the intended preset and that the artifact path matches the target platform's existing convention.
 - Smoke test at least one exported build for the requested targets instead of assuming the preset is valid.
 - Confirm architecture work did not collapse unrelated responsibilities into a single node script, autoload, or generic manager.

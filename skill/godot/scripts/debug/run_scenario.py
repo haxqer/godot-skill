@@ -21,6 +21,17 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     render_group.add_argument("--headless", action="store_true", help="Force headless mode even when screenshots are requested")
     render_group.add_argument("--no-headless", action="store_true", help="Force a rendered window")
     parser.add_argument("--log-file", type=Path)
+    parser.add_argument(
+        "--no-debugger",
+        dest="debugger",
+        action="store_false",
+        help=(
+            "Do not attach the local stdout debugger (-d --ignore-error-breaks). "
+            "GDScript warnings are only emitted through the debugger channel, so "
+            "this suppresses every warning the editor would show (and any "
+            "log_assertions written against them)."
+        ),
+    )
     parser.add_argument("--pretty", action="store_true")
     return parser.parse_args(argv)
 
@@ -56,9 +67,20 @@ def main(argv: list[str] | None = None) -> int:
     command = [args.godot_bin]
     if use_headless:
         command.append("--headless")
+    if args.debugger:
+        # -d routes GDScript warnings to stdout; --ignore-error-breaks keeps the
+        # local debugger from breaking (and ending the run) on the first error.
+        command.extend(["--debug", "--ignore-error-breaks"])
     command.extend(["--path", str(project_path), "--script", str(runner), str(scenario_path)])
     try:
-        completed = subprocess.run(command, capture_output=True, text=True, check=False, timeout=args.timeout)
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=args.timeout,
+            stdin=subprocess.DEVNULL,
+        )
     except subprocess.TimeoutExpired as exc:
         payload = {
             "ok": False,

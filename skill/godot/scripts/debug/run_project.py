@@ -10,10 +10,19 @@ structured diagnostics via ``godot_log_parser`` so the caller can open each
 
 Design notes:
 
-- It never passes ``-d``. The ``-d`` local debugger drops into an interactive
-  ``debug>`` prompt that blocks forever on stdin under automation. Running
-  without ``-d`` still prints full ``SCRIPT ERROR`` blocks with ``at:`` file:line
-  and a GDScript backtrace, which is all we need.
+- It passes ``-d --ignore-error-breaks``. GDScript **warnings** (unused
+  variable, shadowed variable, integer division, standalone expression, ...) are
+  never written to stdout directly: the engine emits them through the script
+  debugger channel, so a plain ``godot --headless`` run prints nothing at all
+  while the editor's Errors panel is full of them. ``-d`` attaches the local
+  stdout debugger so those warnings surface, and ``--ignore-error-breaks``
+  suppresses the interactive ``debug>`` break that ``-d`` alone would trigger on
+  the first error (which would otherwise abort the run early). Pass
+  ``--no-debugger`` to go back to the bare run.
+- stdin is ``/dev/null`` regardless, as a backstop: if a break ever does happen
+  (an explicit ``breakpoint``, or an older Godot that does not know
+  ``--ignore-error-breaks``), the prompt reads EOF and quits instead of hanging,
+  and the ``Debugger Break, Reason:`` line is parsed as a diagnostic.
 - ``--quit-after`` bounds a clean run; a wall-clock ``--timeout`` is the safety
   net that also flags real hangs / infinite loops.
 - Use ``--quit-after`` >= 2. A known engine quirk makes headless
@@ -73,6 +82,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Drop warnings from the diagnostics report.",
     )
     parser.add_argument(
+        "--no-debugger",
+        dest="debugger",
+        action="store_false",
+        help=(
+            "Do not attach the local stdout debugger (-d --ignore-error-breaks). "
+            "GDScript warnings are only emitted through the debugger channel, so "
+            "this suppresses every warning the editor would show."
+        ),
+    )
+    parser.add_argument(
         "--godot-bin",
         default=os.environ.get("GODOT_BIN", "godot"),
         help="Godot executable to invoke (default: GODOT_BIN or godot).",
@@ -111,6 +130,10 @@ def build_command(args: argparse.Namespace, project_path: Path) -> list[str]:
     command = [args.godot_bin]
     if args.headless:
         command.append("--headless")
+    if args.debugger:
+        # -d routes GDScript warnings to stdout; --ignore-error-breaks keeps the
+        # local debugger from breaking (and ending the run) on the first error.
+        command += ["--debug", "--ignore-error-breaks"]
     command += ["--path", str(project_path)]
     if args.quit_after and args.quit_after > 0:
         command += ["--quit-after", str(args.quit_after)]

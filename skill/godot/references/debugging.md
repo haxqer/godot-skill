@@ -42,27 +42,77 @@ For a fast whole-project sanity pass that does not depend on running gameplay,
 validate every file first:
 
 ```bash
-godot --headless --path /abs/project \
+godot --headless --debug --ignore-error-breaks --path /abs/project \
   --script /abs/skill/scripts/core/dispatcher.gd check_project '{}' 2>&1 \
   | python3 /abs/skill/scripts/debug/godot_log_parser.py -
 ```
 
-`check_project` prints a JSON summary of which files failed to load; piping its
-combined output through the parser gives line-level parse-error diagnostics. Scope
-it to a subtree with `{"project_path":"scripts/enemies"}`.
+`check_project` loads every file in the project, so with the debugger attached
+this one command reports the warnings of **every** script, not just the ones a
+short boot happens to load. It prints a JSON summary of which files failed to
+load; piping its combined output through the parser gives the line-level
+diagnostics. Scope it to a subtree with `{"project_path":"scripts/enemies"}`.
 
-Use `python3 scripts/debug/validate_project.py /abs/project --pretty` when the
-project contains C#, GDExtensions, or editor plugins. Use a scenario from
-`references/automation_api.md` when validation requires a specific input flow,
-visual state, log message, or performance bound.
+**Read the log, not only the summary.** Godot degrades gracefully on breakage
+the editor treats as fatal — a scene whose `[ext_resource]` is missing still
+loads and still instantiates, with the property left null, printing only an
+`ERROR:` to stderr. `check_project` cross-checks `ResourceLoader.get_dependencies()`
+to catch that case, but the general rule stands: a `failed_count` of 0 with
+`ERROR:` lines in the log is a failure. `validate_project.py` does both — it runs
+`check_project`, parses the captured log, and refuses to report `ok` while any
+error-level diagnostic is present:
+
+```bash
+python3 scripts/debug/validate_project.py /abs/project --pretty
+```
+
+Its output adds `counts` and `diagnostics` (same shape as `run_project.py`) to
+the file-level `static` summary. Use it when the project contains C#,
+GDExtensions, or editor plugins; add `--warnings-as-errors` to make the pass
+strict. Use a scenario from `references/automation_api.md` when validation
+requires a specific input flow, visual state, log message, or performance bound.
 
 ## Capturing Output Correctly
 
-- **Never use `-d` for automation.** The `-d` / `--debug` local debugger drops
-  into an interactive `debug>` prompt and blocks forever waiting for stdin. Run
-  **without** `-d`; Godot still prints full `SCRIPT ERROR` blocks with `at:`
-  file:line and a GDScript backtrace. `run_project.py` enforces this and feeds
-  the process `/dev/null` on stdin.
+- **Always run with `-d --ignore-error-breaks`.** This is what makes a CLI run
+  report what the editor reports. GDScript **warnings** — unused variable,
+  shadowed variable, integer division, standalone expression, unused parameter,
+  narrowing conversion — are never written to stdout directly. The engine emits
+  them through the *script debugger* channel, which is inactive unless a
+  debugger is attached. That is why the editor (which launches the game with a
+  remote debugger attached) shows a long list of warnings while
+  `godot --headless --path .` prints nothing at all. `-d` attaches the local
+  stdout debugger so those warnings surface; `--ignore-error-breaks` stops the
+  local debugger from breaking into an interactive `debug>` prompt on the first
+  error, which would otherwise end the run early. Use `-d` **alone** for
+  nothing: the pair is the unit. `run_project.py`, `validate_project.py`, and
+  `run_scenario.py` pass both by default (`--no-debugger` opts out) and feed the
+  process `/dev/null` on stdin so any break that does slip through reads EOF and
+  quits instead of hanging.
+
+  ```bash
+  # warnings visible                     # silent, even though the editor complains
+  godot --headless -d --ignore-error-breaks --path /abs/project --quit-after 120
+  godot --headless --path /abs/project --quit-after 120
+  ```
+- **An exit code of 0 is necessary, not sufficient.** A GDScript runtime error
+  inside a dispatcher operation aborts that operation only — the dispatcher
+  resumes and exits `0`, because nothing recorded a failure. The bundled Python
+  wrappers therefore gate on the parsed log as well as the return code
+  (`validate_project.py`, `import_project.py`), and `run_tests.py` /
+  `export_project.py` additionally check that work actually happened (a
+  non-empty suite, an artifact on disk). When you call the dispatcher directly,
+  pipe its combined output through `godot_log_parser.py` rather than trusting
+  `$?` alone. The complementary guard is on the input side: an unknown
+  parameter key is now rejected before the operation runs, which removes the
+  most common way an operation used to crash or silently do the wrong thing.
+- **One class of editor warning stays out of reach.** Node *configuration*
+  warnings — the yellow triangles in the scene tree ("This node has no shape so
+  it can't collide…") — come from `Node::get_configuration_warnings()`, which is
+  not bound outside the editor: a `--script` run cannot read them at any flag
+  combination. If the user reports warnings the tooling does not reproduce, ask
+  whether they are scene-tree triangles rather than Output-panel lines, and
+  inspect the scene structure directly (`inspect_scene`) instead.
 - **Bound every run.** Use `--quit-after N` (frames) for a clean exit and a
   wall-clock `--timeout` as the safety net. A run that hits the timeout
   (`"timed_out": true`) is itself a finding: an infinite loop or a blocking call.

@@ -16,8 +16,8 @@ var uid_utils_script = preload("../utils/uid_utils.gd")
 
 func execute(params: Dictionary) -> void:
     var project_path = "res://"
-    if params.has("project_path") and str(params.project_path) != "":
-        project_path = str(params.project_path)
+    if str(params.get("project_path", "")) != "":
+        project_path = str(params.get("project_path", ""))
         if not project_path.begins_with("res://"):
             project_path = "res://" + project_path
         if not project_path.ends_with("/"):
@@ -93,10 +93,56 @@ func _load_failure_reason(path: String, kind: String) -> String:
             if reload_error != OK:
                 return "parse/compile error (reload returned " + str(reload_error) + "; see stderr)"
 
+    if kind == "shader" and resource is Shader:
+        # load() alone never compiles a shader — the code is only handed to the
+        # rendering server when something uses it, so a .gdshader full of syntax
+        # errors loads perfectly cleanly. Assigning it to a ShaderMaterial forces
+        # the compile; the engine then prints "SHADER ERROR:" to stderr (headless
+        # included, via the dummy renderer). Those messages carry no res:// path,
+        # so the marker below is what lets a reader and godot_log_parser.py
+        # attribute the error to this file.
+        utils_script.log_info("Compiling shader: " + path)
+        var material := ShaderMaterial.new()
+        material.shader = resource
+
     if kind == "scene":
         if resource is PackedScene and not resource.can_instantiate():
             return "PackedScene cannot be instantiated (missing dependency or broken node)"
 
+    if kind == "scene" or kind == "resource":
+        # Godot degrades gracefully when an [ext_resource] is missing: the scene
+        # still loads and still instantiates (with that property left null) while
+        # only printing an ERROR to stderr. The editor flags this loudly, so walk
+        # the declared dependencies and fail the file when one does not resolve.
+        var missing := _missing_dependencies(path)
+        if not missing.is_empty():
+            return "missing dependencies: " + ", ".join(missing)
+
+    return ""
+
+func _missing_dependencies(path: String) -> PackedStringArray:
+    var missing := PackedStringArray()
+    for entry in ResourceLoader.get_dependencies(path):
+        var dep_path := _dependency_path(str(entry))
+        if dep_path.is_empty():
+            continue
+        if not ResourceLoader.exists(dep_path) and not FileAccess.file_exists(dep_path):
+            missing.append(dep_path)
+    return missing
+
+func _dependency_path(entry: String) -> String:
+    # Dependency entries come in several shapes: "res://path",
+    # "res://path::Type", and "uid://abc::Type::res://path". Prefer an explicit
+    # res:// segment; fall back to resolving the uid:// when that is all we get.
+    var parts := entry.split("::", false)
+    for index in range(parts.size() - 1, -1, -1):
+        if parts[index].begins_with("res://"):
+            return parts[index]
+    if parts.size() > 0 and parts[0].begins_with("uid://"):
+        var uid := ResourceUID.text_to_id(parts[0])
+        if uid != ResourceUID.INVALID_ID and ResourceUID.has_id(uid):
+            return ResourceUID.get_id_path(uid)
+        return parts[0]
     return ""
 
 func _check_plugins(base_path: String, counts: Dictionary, failed: Array) -> void:

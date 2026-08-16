@@ -28,11 +28,19 @@ Recognised Godot 4.7 output shapes (captured from ``godot 4.7.stable``)::
     SCRIPT ERROR: Parse Error: Identifier "foo" not declared in the current scope.
               at: GDScript::reload (res://scripts/main.gd:3)
 
+GDScript analyzer warnings only appear in a log captured with
+``-d --ignore-error-breaks`` (see ``run_project.py``); they are attributed to
+``GDScript::reload`` rather than to a runtime function::
+
+    WARNING: The local variable "unused" is declared but never used in the block.
+         at: GDScript::reload (res://scripts/main.gd:6)
+
 Best-effort support is also included for the interactive ``-d`` debugger format
 (``Debugger Break, Reason: '...'`` / ``*Frame N - res://file:line``) and the
 timestamped ``E 0:00:...`` / ``<Stack Trace>`` format, so logs a user pastes by
-hand also parse. The bundled runner (``run_project.py``) never uses ``-d``
-because it blocks on stdin.
+hand also parse. A ``Debugger Break`` in a captured log means the run stopped
+early at the local debugger's prompt — the sign that ``-d`` was passed without
+``--ignore-error-breaks``.
 """
 from __future__ import annotations
 
@@ -63,6 +71,19 @@ _HEADER_PATTERNS: list[tuple[re.Pattern[str], str]] = [
 # res:// location, e.g. "res://scripts/main.gd:4". res:// paths contain no ':'
 # other than the line-number separator, so stopping at the first ':' is safe.
 _RES_LOC = re.compile(r"(res://[^:\s()]+):(\d+)")
+
+# Resource-loader messages that lead with their own location, e.g.
+# "res://scenes/main.tscn:9 - Parse Error: [ext_resource] referenced ...".
+_RES_MSG_LOC = re.compile(r"^(res://[^:\s()]+):(\d+)\s*-\s")
+
+# Shader compile errors report a bare line number with no path, because the
+# rendering server does not know which file the code came from:
+#     SHADER ERROR: Invalid arguments for the built-in function: ...
+#               at: (null) (:4)
+# check_project prints a marker naming the file right before it forces the
+# compile, which is what lets these be attributed to a path.
+_BARE_LINE_LOC = re.compile(r"^:(\d+)$")
+_SHADER_CONTEXT = re.compile(r"^\[INFO\]\s*Compiling shader:\s*(\S+)\s*$")
 
 # "at: <func> (<loc>)" continuation line.
 _AT_LINE = re.compile(r"^at:\s*(?P<func>.*?)\s*\((?P<loc>[^()]*)\)\s*$")
@@ -225,6 +246,8 @@ class _Diagnostic:
         "function",
         "stack",
         "raw_lines",
+        "fallback",
+        "context_file",
     )
 
     def __init__(self, severity: str, message: str) -> None:
@@ -235,6 +258,20 @@ class _Diagnostic:
         self.function: Optional[str] = None
         self.stack: list[dict] = []
         self.raw_lines: list[str] = []
+        # Location parsed out of the header message itself, used only when no
+        # `at:`/backtrace line supplied a better one (see set_fallback_location).
+        self.fallback: Optional[tuple[str, int]] = None
+        # File the enclosing tool said it was working on, used to attribute a
+        # pathless diagnostic (shader compile errors) to a source file.
+        self.context_file: Optional[str] = None
+
+    def set_fallback_location(self, file: str, line: int) -> None:
+        if self.fallback is None:
+            self.fallback = (file, line)
+
+    def apply_fallback(self) -> None:
+        if self.file is None and self.fallback is not None:
+            self.file, self.line = self.fallback
 
     def set_location(self, file: str, line: int, function: Optional[str]) -> None:
         # First concrete res:// location wins (the crash site), except we never
@@ -291,6 +328,10 @@ def _apply_continuation(diag: _Diagnostic, stripped: str) -> None:
         res = _RES_LOC.search(loc)
         if res:
             diag.set_location(res.group(1), int(res.group(2)), at_match.group("func"))
+            return
+        bare = _BARE_LINE_LOC.match(loc.strip())
+        if bare and diag.context_file:
+            diag.set_fallback_location(diag.context_file, int(bare.group(1)))
         return
 
     frame_match = _FRAME_LINE.match(stripped)
@@ -328,21 +369,33 @@ def parse_log(text: str, include_warnings: bool = True) -> dict:
     """
     diagnostics: list[_Diagnostic] = []
     current: Optional[_Diagnostic] = None
+    # Most recent "Compiling shader: <path>" marker, used to give pathless
+    # SHADER ERROR blocks a file to point at.
+    shader_context: Optional[str] = None
 
     def close() -> None:
         nonlocal current
         if current is not None:
+            current.apply_fallback()
             diagnostics.append(current)
             current = None
 
     for raw_line in text.splitlines():
         stripped = raw_line.strip()
+
+        marker = _SHADER_CONTEXT.match(stripped)
+        if marker:
+            close()
+            shader_context = marker.group(1)
+            continue
+
         header = _match_header(stripped)
 
         if header is not None:
             close()
             severity, message = header
             current = _Diagnostic(severity, message)
+            current.context_file = shader_context if severity == "shader_error" else None
             current.raw_lines.append(raw_line.rstrip())
 
             # The timestamped "E 0:00:.. file.gd:10 @ func(): msg" header also
@@ -350,6 +403,15 @@ def parse_log(text: str, include_warnings: bool = True) -> dict:
             ts = _TS_LOC.search(stripped)
             if ts:
                 current.set_location(ts.group("file"), int(ts.group("line")), ts.group("func"))
+                continue
+
+            # Resource-loader diagnostics put the location in the message itself:
+            # "ERROR: res://scenes/main.tscn:9 - Parse Error: [ext_resource] ...".
+            # Only used if no `at:`/backtrace line gives a real location, so a
+            # runtime error's crash site always wins.
+            res = _RES_MSG_LOC.match(message)
+            if res:
+                current.set_fallback_location(res.group(1), int(res.group(2)))
             continue
 
         if current is None:

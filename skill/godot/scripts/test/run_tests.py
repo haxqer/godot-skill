@@ -29,6 +29,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--godot-bin", default=os.environ.get("GODOT_BIN", "godot"))
     parser.add_argument("--junit-xml", default="", help="Also write a JUnit XML report to this absolute path (GUT only)")
     parser.add_argument("--timeout", type=float, default=600.0)
+    parser.add_argument(
+        "--allow-empty",
+        action="store_true",
+        help="Do not fail when the tests directory contains no test scripts",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Report detection and the exact command without running")
     parser.add_argument("--pretty", action="store_true")
     return parser.parse_args(argv)
@@ -49,6 +54,18 @@ def resolve_tests_dir(project_path: Path, requested: str) -> str:
         if (project_path / candidate).is_dir():
             return candidate
     return ""
+
+
+def count_test_scripts(project_path: Path, tests_dir: str) -> int:
+    """Number of GDScript/C# files under the tests directory.
+
+    Both runners exit 0 when they find nothing to run, so a wrong --tests-dir
+    (or a directory that was never populated) otherwise reports as a clean pass.
+    """
+    root = project_path / tests_dir
+    if not root.is_dir():
+        return 0
+    return sum(1 for path in root.rglob("*") if path.suffix in {".gd", ".cs"} and path.is_file())
 
 
 def build_command(framework: str, args: argparse.Namespace, project_path: Path, tests_dir: str) -> list[str]:
@@ -95,8 +112,28 @@ def main(argv: list[str] | None = None) -> int:
         }, indent=2 if args.pretty else None))
         return 1
 
+    test_script_count = count_test_scripts(project_path, tests_dir)
+    if test_script_count == 0 and not args.allow_empty:
+        print(json.dumps({
+            "ok": False,
+            "framework": framework,
+            "tests_dir": f"res://{tests_dir}",
+            "test_script_count": 0,
+            "errors": [
+                f"No test scripts found under res://{tests_dir}. Both runners exit 0 when they "
+                "collect nothing, so this would otherwise be reported as a passing run. Point "
+                "--tests-dir at the real suite, or pass --allow-empty if an empty suite is expected."
+            ],
+        }, indent=2 if args.pretty else None))
+        return 1
+
     command = build_command(framework, args, project_path, tests_dir)
-    payload: dict = {"framework": framework, "tests_dir": f"res://{tests_dir}", "command": command}
+    payload: dict = {
+        "framework": framework,
+        "tests_dir": f"res://{tests_dir}",
+        "test_script_count": test_script_count,
+        "command": command,
+    }
 
     if args.dry_run:
         payload["ok"] = True

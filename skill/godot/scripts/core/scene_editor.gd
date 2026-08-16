@@ -400,8 +400,9 @@ func connect_signal(params: Dictionary) -> bool:
     var signal_ref = Signal(source, signal_name)
     var callable = Callable(target, method_name)
     if params.has("binds"):
-        var converted_binds = _convert_json_value(params.binds, "connect_signal.binds")
-        if converted_binds == null and params.binds != null:
+        var raw_binds = params.get("binds")
+        var converted_binds = _convert_json_value(raw_binds, "connect_signal.binds")
+        if converted_binds == null and raw_binds != null:
             return false
         if not (converted_binds is Array):
             utils_script.log_error("connect_signal.binds must resolve to an array")

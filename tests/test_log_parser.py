@@ -155,6 +155,71 @@ def test_unknown_message_still_reports_location_and_fallback_fix():
     assert diag["suggested_fix"]
 
 
+def test_resource_loader_message_carries_its_own_location():
+    # The resource text loader leads with "res://file:line - " instead of using
+    # an `at:` continuation, so the location has to come out of the message.
+    log = (
+        "ERROR: res://scenes/main.tscn:9 - Parse Error: [ext_resource] referenced "
+        "non-existent resource at: res://art/missing.png.\n"
+    )
+    diag = _only(parse_log(log))
+    assert diag["severity"] == "error"
+    assert diag["file"] == "res://scenes/main.tscn" and diag["line"] == 9
+
+
+def test_at_line_location_beats_a_location_inside_the_message():
+    # A message may mention some other res:// path; the `at:` crash site wins.
+    log = (
+        "SCRIPT ERROR: res://other.gd:99 - mentioned in passing\n"
+        "          at: _ready (res://scripts/main.gd:4)\n"
+    )
+    diag = _only(parse_log(log))
+    assert diag["file"] == "res://scripts/main.gd" and diag["line"] == 4
+
+
+def test_gdscript_warning_from_the_debugger_channel_parses():
+    # What `-d --ignore-error-breaks` adds to the log: analyzer warnings, each
+    # attributed to GDScript::reload rather than a runtime function.
+    log = (
+        'WARNING: The local variable "unused_local" is declared but never used in '
+        'the block. If this is intended, prefix it with an underscore: "_unused_local".\n'
+        "     at: GDScript::reload (res://scripts/main.gd:6)\n"
+        "WARNING: Integer division. Decimal part will be discarded.\n"
+        "     at: GDScript::reload (res://scripts/main.gd:9)\n"
+    )
+    report = parse_log(log)
+    assert report["counts"]["warnings"] == 2
+    assert report["counts"]["errors"] == 0
+    lines = [d["line"] for d in report["diagnostics"]]
+    assert lines == [6, 9]
+    # GDScript::reload is a synthetic frame, not a useful function name.
+    assert all(d["function"] is None for d in report["diagnostics"])
+
+
+def test_shader_error_is_attributed_via_the_compiling_marker():
+    # Shader compile errors report a bare line with no path, so check_project
+    # prints a marker naming the file it is about to compile.
+    log = (
+        "[INFO] Compiling shader: res://shaders/effect.gdshader\n"
+        "--Main Shader--\n"
+        'SHADER ERROR: Invalid arguments for the built-in function: "vec4(float,float,float)".\n'
+        "          at: (null) (:4)\n"
+    )
+    diag = _only(parse_log(log))
+    assert diag["severity"] == "shader_error"
+    assert diag["file"] == "res://shaders/effect.gdshader" and diag["line"] == 4
+
+
+def test_marker_does_not_leak_onto_unrelated_diagnostics():
+    log = (
+        "[INFO] Compiling shader: res://shaders/effect.gdshader\n"
+        "SCRIPT ERROR: Parse Error: Identifier \"foo\" not declared in the current scope.\n"
+        "          at: GDScript::reload (res://scripts/main.gd:3)\n"
+    )
+    diag = _only(parse_log(log))
+    assert diag["file"] == "res://scripts/main.gd" and diag["line"] == 3
+
+
 def main() -> None:
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     for test in tests:

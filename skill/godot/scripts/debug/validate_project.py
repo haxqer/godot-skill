@@ -1,4 +1,23 @@
 #!/usr/bin/env python3
+"""Validate a Godot project's resources, plugins, GDExtensions, and C# solutions.
+
+This runs the ``check_project`` dispatcher operation, which loads every script,
+scene, shader, and resource in the project, and reports what the engine said
+while doing it.
+
+Two things make this match what the Godot editor shows, instead of the much
+quieter output a plain CLI run produces:
+
+- It passes ``-d --ignore-error-breaks``. GDScript warnings are emitted through
+  the script debugger channel, never straight to stdout, so without ``-d`` a
+  headless run prints no warnings at all. ``--ignore-error-breaks`` keeps the
+  local debugger from breaking on the first error.
+- It parses the captured stdout+stderr with ``godot_log_parser`` and folds the
+  result into the verdict. Godot degrades gracefully on a lot of real breakage
+  (a scene whose ``[ext_resource]`` is missing still loads and instantiates), so
+  the file-level pass/fail list alone reports ``ok`` while the log carries the
+  actual ``ERROR:`` lines.
+"""
 from __future__ import annotations
 
 import argparse
@@ -9,6 +28,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from godot_log_parser import parse_log  # noqa: E402
+
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Validate Godot resources, plugins, GDExtensions, and C# solutions.")
@@ -18,6 +40,26 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--project-subpath", default="")
     parser.add_argument("--csharp", choices=["auto", "always", "never"], default="auto")
     parser.add_argument("--timeout", type=float, default=180.0)
+    parser.add_argument(
+        "--no-warnings",
+        action="store_true",
+        help="Drop warnings from the diagnostics report (errors still fail the run).",
+    )
+    parser.add_argument(
+        "--warnings-as-errors",
+        action="store_true",
+        help="Fail the run when any warning is reported, not just on errors.",
+    )
+    parser.add_argument(
+        "--no-debugger",
+        dest="debugger",
+        action="store_false",
+        help=(
+            "Do not attach the local stdout debugger (-d --ignore-error-breaks). "
+            "GDScript warnings are only emitted through the debugger channel, so "
+            "this suppresses every warning the editor would show."
+        ),
+    )
     parser.add_argument("--pretty", action="store_true")
     return parser.parse_args(argv)
 
@@ -36,7 +78,14 @@ def command_result(completed: subprocess.CompletedProcess[str]) -> dict:
 
 def run_bounded(command: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
     try:
-        return subprocess.run(command, capture_output=True, text=True, check=False, timeout=timeout)
+        return subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout,
+            stdin=subprocess.DEVNULL,
+        )
     except subprocess.TimeoutExpired as exc:
         stdout = exc.stdout.decode(errors="replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
         stderr = exc.stderr.decode(errors="replace") if isinstance(exc.stderr, bytes) else (exc.stderr or "")
@@ -51,11 +100,15 @@ def main(argv: list[str] | None = None) -> int:
     dispatcher = (args.dispatcher or Path(__file__).resolve().parents[1] / "core/dispatcher.gd").resolve()
 
     params = {"project_path": args.project_subpath} if args.project_subpath else {}
-    checked = run_bounded(
-        [args.godot_bin, "--headless", "--path", str(project_path), "--script", str(dispatcher), "check_project", json.dumps(params)],
-        args.timeout,
-    )
+    command = [args.godot_bin, "--headless"]
+    if args.debugger:
+        # -d routes GDScript warnings to stdout; --ignore-error-breaks keeps the
+        # local debugger from breaking (and ending the run) on the first error.
+        command += ["--debug", "--ignore-error-breaks"]
+    command += ["--path", str(project_path), "--script", str(dispatcher), "check_project", json.dumps(params)]
+    checked = run_bounded(command, args.timeout)
     static = extract_payload(checked.stdout)
+    report = parse_log(checked.stdout + "\n" + checked.stderr, include_warnings=not args.no_warnings)
 
     csproj_files = sorted(project_path.glob("*.csproj"))
     csharp_requested = args.csharp == "always" or (args.csharp == "auto" and bool(csproj_files))
@@ -74,11 +127,22 @@ def main(argv: list[str] | None = None) -> int:
     else:
         csharp["ok"] = True
 
-    ok = checked.returncode == 0 and int(static.get("failed_count", 1)) == 0 and bool(csharp.get("ok", False))
+    counts = report["counts"]
+    log_clean = counts["errors"] == 0 and counts["parse_errors"] == 0
+    if args.warnings_as_errors and counts["warnings"]:
+        log_clean = False
+    ok = (
+        checked.returncode == 0
+        and int(static.get("failed_count", 1)) == 0
+        and bool(csharp.get("ok", False))
+        and log_clean
+    )
     payload = {
         "ok": ok,
         "project_path": str(project_path),
         "static": static,
+        "counts": counts,
+        "diagnostics": report["diagnostics"],
         "godot": command_result(checked),
         "csharp": csharp,
     }

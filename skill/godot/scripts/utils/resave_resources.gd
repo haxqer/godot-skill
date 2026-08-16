@@ -9,7 +9,7 @@ func execute(params: Dictionary) -> void:
     
     var project_path = "res://"
     if params.has("project_path"):
-        project_path = params.project_path
+        project_path = str(params.get("project_path", ""))
         if not project_path.begins_with("res://"):
             project_path = "res://" + project_path
         if not project_path.ends_with("/"):

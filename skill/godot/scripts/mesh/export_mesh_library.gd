@@ -4,16 +4,24 @@ extends RefCounted
 var utils_script = preload("../core/utils.gd")
 
 func execute(params: Dictionary) -> void:
-    utils_script.log_info("Exporting MeshLibrary from scene: " + params.scene_path)
-    
-    var full_scene_path = params.scene_path
+    # Read every parameter through get()/has() with an explicit required check.
+    # Attribute access (params.scene_path) raises a GDScript runtime error on a
+    # missing key, which aborts execute() without setting had_errors — the
+    # dispatcher then exits 0 and the caller believes the export succeeded.
+    var full_scene_path := str(params.get("scene_path", ""))
+    var full_output_path := str(params.get("output_path", ""))
+    if full_scene_path.is_empty() or full_output_path.is_empty():
+        utils_script.log_error("export_mesh_library requires scene_path and output_path")
+        return
+
+    utils_script.log_info("Exporting MeshLibrary from scene: " + full_scene_path)
+
     if not full_scene_path.begins_with("res://"):
         full_scene_path = "res://" + full_scene_path
-        
-    var full_output_path = params.output_path
+
     if not full_output_path.begins_with("res://"):
         full_output_path = "res://" + full_output_path
-        
+
     if not FileAccess.file_exists(full_scene_path):
         utils_script.log_error("Scene file does not exist at: " + full_scene_path)
         return
@@ -30,7 +38,7 @@ func execute(params: Dictionary) -> void:
 
     var mesh_library = MeshLibrary.new()
     
-    var mesh_item_names = params.mesh_item_names if params.has("mesh_item_names") else []
+    var mesh_item_names = params.get("mesh_item_names", [])
     var use_specific_items = mesh_item_names.size() > 0
     
     var item_id = 0

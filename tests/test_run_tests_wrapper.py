@@ -19,6 +19,7 @@ def main() -> None:
     test_gut_detection_and_command()
     test_gdunit4_detection_and_command()
     test_gut_real_execution_path()
+    test_empty_tests_dir_is_not_a_pass()
     print("All run_tests wrapper tests passed.")
 
 
@@ -34,6 +35,7 @@ def test_gut_detection_and_command() -> None:
         (project / "addons/gut").mkdir(parents=True)
         (project / "addons/gut/gut_cmdln.gd").write_text("extends SceneTree\n", encoding="utf-8")
         (project / "test").mkdir()
+        (project / "test/test_stub.gd").write_text("extends RefCounted\n", encoding="utf-8")
         payload = run_wrapper(project, "--dry-run")
         assert payload["ok"] is True
         assert payload["framework"] == "gut"
@@ -47,12 +49,30 @@ def test_gdunit4_detection_and_command() -> None:
         (project / "addons/gdUnit4/bin").mkdir(parents=True)
         (project / "addons/gdUnit4/bin/GdUnitCmdTool.gd").write_text("extends SceneTree\n", encoding="utf-8")
         (project / "tests").mkdir()
+        (project / "tests/test_stub.gd").write_text("extends RefCounted\n", encoding="utf-8")
         payload = run_wrapper(project, "--dry-run")
         assert payload["ok"] is True
         assert payload["framework"] == "gdunit4"
         assert payload["tests_dir"] == "res://tests"
         assert "res://addons/gdUnit4/bin/GdUnitCmdTool.gd" in payload["command"]
         assert "--continue" in payload["command"]
+
+
+def test_empty_tests_dir_is_not_a_pass() -> None:
+    """A framework with nothing to run exits 0; that must not read as success."""
+    with fixture_project() as project:
+        (project / "addons/gut").mkdir(parents=True)
+        (project / "addons/gut/gut_cmdln.gd").write_text("extends SceneTree\n", encoding="utf-8")
+        (project / "test").mkdir()
+        payload = run_wrapper(project, "--dry-run", expected_returncode=1)
+        assert payload["ok"] is False
+        assert payload["test_script_count"] == 0
+        assert "No test scripts found" in payload["errors"][0]
+
+        # ...and the escape hatch still allows it deliberately.
+        allowed = run_wrapper(project, "--dry-run", "--allow-empty")
+        assert allowed["ok"] is True
+        assert allowed["test_script_count"] == 0
 
 
 def test_gut_real_execution_path() -> None:
@@ -69,6 +89,8 @@ def test_gut_real_execution_path() -> None:
             encoding="utf-8",
         )
         (project / "test").mkdir()
+        # A real suite file: the wrapper refuses to call an empty directory a pass.
+        (project / "test/test_stub.gd").write_text("extends RefCounted\n", encoding="utf-8")
         payload = run_wrapper(project)
         assert payload["ok"] is True
         assert payload["status"] == "passed"

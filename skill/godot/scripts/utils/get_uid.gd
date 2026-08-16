@@ -8,7 +8,7 @@ func execute(params: Dictionary) -> void:
         utils_script.log_error("File path is required")
         return
         
-    var file_path = params.file_path
+    var file_path = str(params.get("file_path", ""))
     if not file_path.begins_with("res://"):
         file_path = "res://" + file_path
         

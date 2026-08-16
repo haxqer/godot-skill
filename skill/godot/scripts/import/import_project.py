@@ -8,6 +8,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "debug"))
+from godot_log_parser import parse_log  # noqa: E402
+
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Import a Godot project and return a structured import audit.")
@@ -75,13 +78,32 @@ def main(argv: list[str] | None = None) -> int:
     except (RuntimeError, json.JSONDecodeError) as exc:
         audit = {"ok": False, "error": str(exc)}
 
+    # `godot --headless --import` exits 0 even when individual assets fail to
+    # import, and a GDScript runtime error inside an operation aborts it without
+    # changing the dispatcher's exit code — so the captured log is gated too,
+    # not just the return codes.
+    combined = "\n".join([
+        import_result["stdout"], import_result["stderr"],
+        audit_completed.stdout, audit_completed.stderr,
+    ])
+    report = parse_log(combined, include_warnings=False)
+    counts = report["counts"]
+
     payload = {
-        "ok": import_result["returncode"] == 0 and audit_completed.returncode == 0 and bool(audit.get("ok", False)),
+        "ok": (
+            import_result["returncode"] == 0
+            and audit_completed.returncode == 0
+            and bool(audit.get("ok", False))
+            and counts["errors"] == 0
+            and counts["parse_errors"] == 0
+        ),
         "project_path": str(project_path),
         "import": import_result,
         "audit": audit,
         "audit_returncode": audit_completed.returncode,
         "audit_stderr": audit_completed.stderr,
+        "counts": counts,
+        "diagnostics": report["diagnostics"],
     }
     print(json.dumps(payload, indent=2 if args.pretty else None))
     return 0 if payload["ok"] else 1

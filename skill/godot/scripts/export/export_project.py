@@ -223,6 +223,19 @@ def preflight(
     }
 
 
+def artifact_is_present(output_path: Path) -> bool:
+    """True when the export actually wrote something at the requested path.
+
+    Some targets write a directory (an unzipped macOS .app, an Android build
+    directory), so a directory counts when it is non-empty.
+    """
+    if output_path.is_file():
+        return output_path.stat().st_size > 0
+    if output_path.is_dir():
+        return any(output_path.iterdir())
+    return False
+
+
 def emit(
     command: list[str],
     project_path: Path,
@@ -279,6 +292,16 @@ def main(argv: list[str] | None = None) -> int:
         emit(command, project_path, args.preset_name, output_path, args.mode, True, preflight_result)
         return 1
     completed = subprocess.run(command, check=False)
+    # Godot's exporter has exited 0 while producing nothing (missing template
+    # variant, a preset that filtered every file out, an unwritable target).
+    # Reporting that as a successful build is the failure mode this guards.
+    if completed.returncode == 0 and not artifact_is_present(output_path):
+        print(
+            f"Export reported success but produced no artifact at {output_path}. "
+            "Check the export template for this preset and the output path's permissions.",
+            file=sys.stderr,
+        )
+        return 1
     return completed.returncode
 
 
