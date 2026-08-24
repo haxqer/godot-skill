@@ -76,6 +76,14 @@ _RES_LOC = re.compile(r"(res://[^:\s()]+):(\d+)")
 # "res://scenes/main.tscn:9 - Parse Error: [ext_resource] referenced ...".
 _RES_MSG_LOC = re.compile(r"^(res://[^:\s()]+):(\d+)\s*-\s")
 
+# Some engine messages name the file they are about inside quotes and carry no
+# location of their own — their `at:` line points into engine C++ source. The
+# scene-instantiation warning check_project surfaces is the important one:
+#   WARNING: Parent path './VBox' for node 'Label' has vanished when
+#            instantiating: 'res://ui/hud.tscn'.
+# Used only as a fallback, so a real `at:`/backtrace location always wins.
+_QUOTED_RES_PATH = re.compile(r"'(res://[^']+)'")
+
 # Shader compile errors report a bare line number with no path, because the
 # rendering server does not know which file the code came from:
 #     SHADER ERROR: Invalid arguments for the built-in function: ...
@@ -137,6 +145,28 @@ _CATEGORY_RULES: list[tuple[str, str, str]] = [
         "not found in base",
         "missing_method",
         "The function/member is not found on the base type. Fix the name, cast to the right type, or declare it.",
+    ),
+    (
+        # PackedScene.instantiate() rejects the scene and returns null. Both
+        # shapes ("root node X cannot specify a parent node" and "node X does
+        # not specify its parent node") load without complaint, so only an
+        # instantiate pass reports them (check_project does this by default).
+        "invalid scene",
+        "scene_hierarchy",
+        "The .tscn node hierarchy is invalid, so PackedScene.instantiate() returns null and the scene is "
+        "unusable. In the file, the first [node] entry (the root) must have no parent= key, and every other "
+        "[node] entry must have one naming an existing node ('.' for a direct child of the root).",
+    ),
+    (
+        # The node is not lost: the engine reparents it to the scene root under
+        # a mangled "<path>#<name>" name, so the scene still runs, just with the
+        # wrong tree (and, for Control nodes, the wrong layout).
+        "has vanished when instantiating",
+        "scene_hierarchy",
+        "A [node] entry names a parent= path that does not exist at that point in the file, so the engine "
+        "reparented the node to the scene root under a mangled '<path>#<name>' name. Fix the parent= path "
+        "(it is relative to the root, with no leading './'), and make sure the parent node is declared "
+        "before its children. inspect_scene shows the resulting tree.",
     ),
     (
         "nonexistent signal",
@@ -260,12 +290,13 @@ class _Diagnostic:
         self.raw_lines: list[str] = []
         # Location parsed out of the header message itself, used only when no
         # `at:`/backtrace line supplied a better one (see set_fallback_location).
-        self.fallback: Optional[tuple[str, int]] = None
+        # The line may be None when the message names a file but no line.
+        self.fallback: Optional[tuple[str, Optional[int]]] = None
         # File the enclosing tool said it was working on, used to attribute a
         # pathless diagnostic (shader compile errors) to a source file.
         self.context_file: Optional[str] = None
 
-    def set_fallback_location(self, file: str, line: int) -> None:
+    def set_fallback_location(self, file: str, line: Optional[int]) -> None:
         if self.fallback is None:
             self.fallback = (file, line)
 
@@ -412,6 +443,13 @@ def parse_log(text: str, include_warnings: bool = True) -> dict:
             res = _RES_MSG_LOC.match(message)
             if res:
                 current.set_fallback_location(res.group(1), int(res.group(2)))
+                continue
+
+            # Engine messages that quote the file they concern but report no
+            # line (the scene-instantiation warnings above all look like this).
+            quoted = _QUOTED_RES_PATH.search(message)
+            if quoted:
+                current.set_fallback_location(quoted.group(1), None)
             continue
 
         if current is None:

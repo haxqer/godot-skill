@@ -10,11 +10,35 @@ extends RefCounted
 # broken file is loaded here, so callers can pipe the combined output through
 # scripts/debug/godot_log_parser.py to get structured, line-level diagnostics.
 # The JSON summary this prints gives the file-level pass/fail list.
+#
+# Scenes are also instantiated (params "instantiate", default true). load() alone
+# accepts every broken node hierarchy: a root node carrying parent="." and a
+# non-root node with no parent= both load cleanly and only fail at
+# PackedScene.instantiate(), which returns null after printing
+# "ERROR: Invalid scene: ..." to stderr. A node whose parent= names a node that
+# does not exist likewise loads cleanly and is silently reparented to the root
+# under a mangled "<path>#<name>" name, with only a
+# "WARNING: Parent path ... has vanished" on stderr. Instantiating is what makes
+# any of that visible.
+#
+# What instantiate() executes: the root script's _init() and every script setter
+# for a property stored in the .tscn (an @export with a custom setter runs with
+# the stored value). _enter_tree/_ready do NOT run — nothing is added to a tree —
+# and get_tree() is null inside _init and inside those setters, exactly as it is
+# when the running game instantiates the same scene. Autoload singletons are
+# available (the dispatcher defers the op until the SceneTree has registered
+# them), so a scene script that touches one does not produce a false failure.
 
 var utils_script = preload("../core/utils.gd")
 var uid_utils_script = preload("../utils/uid_utils.gd")
 
+# Whether scenes are instantiated as well as loaded. Opt out with
+# {"instantiate": false} for a pure load-only pass that runs no project code.
+var _instantiate_scenes: bool = true
+var _scenes_instantiated: int = 0
+
 func execute(params: Dictionary) -> void:
+    _instantiate_scenes = bool(params.get("instantiate", true))
     var project_path = "res://"
     if str(params.get("project_path", "")) != "":
         project_path = str(params.get("project_path", ""))
@@ -52,7 +76,9 @@ func execute(params: Dictionary) -> void:
         "ok": checked - failed.size(),
         "failed_count": failed.size(),
         "failed": failed,
-        "counts": counts
+        "counts": counts,
+        "instantiate": _instantiate_scenes,
+        "scenes_instantiated": _scenes_instantiated
     }
 
     utils_script.log_info(
@@ -117,6 +143,20 @@ func _load_failure_reason(path: String, kind: String) -> String:
         var missing := _missing_dependencies(path)
         if not missing.is_empty():
             return "missing dependencies: " + ", ".join(missing)
+
+    if kind == "scene" and _instantiate_scenes and resource is PackedScene:
+        # can_instantiate() is true for the broken hierarchies below — only the
+        # instantiate() call itself rejects them, by returning null.
+        var instance = resource.instantiate()
+        if instance == null:
+            return (
+                "instantiate() returned null — Invalid scene: the root node carries a parent= entry, "
+                + "or a non-root node has no parent= entry (see the \"Invalid scene:\" ERROR in stderr)"
+            )
+        _scenes_instantiated += 1
+        # Nothing was added to a tree, so an immediate free() is safe and keeps
+        # the whole pass from accumulating every scene in the project in memory.
+        instance.free()
 
     return ""
 

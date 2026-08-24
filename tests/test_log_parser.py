@@ -220,6 +220,46 @@ def test_marker_does_not_leak_onto_unrelated_diagnostics():
     assert diag["file"] == "res://scripts/main.gd" and diag["line"] == 3
 
 
+def test_invalid_scene_errors_are_categorised():
+    # Printed by PackedScene.instantiate(); check_project's instantiate pass is
+    # what makes them appear at all. The engine names the node, never the scene,
+    # so `file` stays None — the scene path comes from check_project's JSON.
+    log = (
+        "ERROR: Invalid scene: root node Root cannot specify a parent node.\n"
+        "   at: instantiate (scene/resources/packed_scene.cpp:221)\n"
+        "ERROR: Invalid scene: node Child does not specify its parent node.\n"
+        "   at: instantiate (scene/resources/packed_scene.cpp:209)\n"
+    )
+    report = parse_log(log)
+    assert report["counts"]["errors"] == 2, report
+    assert all(d["category"] == "scene_hierarchy" for d in report["diagnostics"]), report["diagnostics"]
+    assert all(d["file"] is None for d in report["diagnostics"]), report["diagnostics"]
+    assert "parent=" in report["diagnostics"][0]["suggested_fix"]
+
+
+def test_vanished_parent_warning_is_attributed_to_its_scene():
+    # This one names its scene inside the message and has no res:// location on
+    # any continuation line, so the quoted path is the only thing to go on.
+    log = (
+        "WARNING: Parent path './VBox' for node 'Label' has vanished when "
+        "instantiating: 'res://scenes/menu.tscn'.\n"
+        "     at: instantiate (scene/resources/packed_scene.cpp:213)\n"
+    )
+    diag = _only(parse_log(log))
+    assert diag["severity"] == "warning"
+    assert diag["category"] == "scene_hierarchy"
+    assert diag["file"] == "res://scenes/menu.tscn" and diag["line"] is None
+
+
+def test_quoted_path_never_overrides_a_real_location():
+    log = (
+        "SCRIPT ERROR: something about 'res://scenes/other.tscn' went wrong\n"
+        "          at: _ready (res://scripts/main.gd:4)\n"
+    )
+    diag = _only(parse_log(log))
+    assert diag["file"] == "res://scripts/main.gd" and diag["line"] == 4
+
+
 def main() -> None:
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     for test in tests:

@@ -11,6 +11,10 @@ summary, while the project was broken or the requested change had not been made.
   recording an error — the dispatcher then exited 0.
 - ``.gdshader`` files were only loaded, never compiled, so a shader full of
   syntax errors passed validation.
+- Scenes were only loaded, never instantiated, so every broken node hierarchy
+  passed: a root node carrying ``parent="."`` and a non-root node with no
+  ``parent=`` both make ``instantiate()`` return null, and a ``parent=`` naming a
+  node that does not exist is silently reparented to the root.
 - ``run_tests.py`` reported a pass when the suite contained nothing to run.
 - ``export_project.py`` trusted the exporter's exit code without checking that
   an artifact was actually produced.
@@ -240,12 +244,14 @@ void fragment() {
 """
 
 
-def validate(project: Path) -> dict:
+def validate(project: Path, *flags: str) -> dict:
     result = subprocess.run(
-        ["python3", str(VALIDATE_PROJECT), str(project)],
+        ["python3", str(VALIDATE_PROJECT), str(project), *flags],
         capture_output=True, text=True, check=False,
     )
-    return json.loads(result.stdout)
+    report = json.loads(result.stdout)
+    report["_returncode"] = result.returncode
+    return report
 
 
 def test_broken_shader_fails_validation() -> None:
@@ -270,6 +276,181 @@ def test_valid_shader_passes_validation() -> None:
     report = validate(shader_project(VALID_SHADER))
     assert report["ok"] is True, report
     assert report["counts"]["errors"] == 0, report
+
+
+# --- Broken node hierarchies -----------------------------------------------
+# load() accepts every one of these; only PackedScene.instantiate() rejects them.
+# The fixtures are written into throwaway projects rather than added under
+# tests/fixtures/minimal_project, whose file count other tests assert on.
+
+ROOT_WITH_PARENT = """[gd_scene format=3]
+
+[node name="Root" type="Node2D" parent="."]
+
+[node name="Child" type="Node2D" parent="."]
+"""
+
+MISSING_PARENT = """[gd_scene format=3]
+
+[node name="Root" type="Node2D"]
+
+[node name="Child" type="Node2D"]
+"""
+
+VANISHED_PARENT = """[gd_scene format=3]
+
+[node name="Root" type="Node2D"]
+
+[node name="Panel" type="Panel" parent="."]
+
+[node name="Label" type="Label" parent="VBox"]
+"""
+
+# Every node under the root: a *valid* scene that instantiates silently. The
+# instantiate pass deliberately does not report it — only inspect_scene does.
+FLAT_TREE = """[gd_scene format=3]
+
+[node name="Root" type="Control"]
+
+[node name="A" type="Label" parent="."]
+
+[node name="B" type="Label" parent="."]
+"""
+
+
+def scene_project(scenes: dict[str, str]) -> Path:
+    root = Path(tempfile.mkdtemp(prefix="godot-scene-test-"))
+    TEMP_ROOTS.append(root)
+    (root / "scenes").mkdir()
+    (root / "project.godot").write_text(
+        'config_version=5\n[application]\nconfig/name="SceneTest"\n', encoding="utf-8"
+    )
+    for name, source in scenes.items():
+        (root / "scenes" / name).write_text(source, encoding="utf-8")
+    return root
+
+
+def check_project(project: Path, params: dict | None = None) -> tuple[dict, subprocess.CompletedProcess[str]]:
+    """Run the check_project op and return (parsed JSON summary, process)."""
+    result = dispatch(project, "check_project", params if params is not None else {})
+    for line in reversed(result.stdout.splitlines()):
+        line = line.strip()
+        if line.startswith("{") and line.endswith("}"):
+            return json.loads(line), result
+    raise AssertionError("check_project printed no JSON:\n" + result.stdout + result.stderr)
+
+
+def test_invalid_scene_hierarchies_fail_check_project() -> None:
+    """Both null-instantiate shapes must be reported; load() alone passes them."""
+    if not godot_available():
+        print("SKIP test_invalid_scene_hierarchies_fail_check_project (no godot)")
+        return
+    project = scene_project({"root_with_parent.tscn": ROOT_WITH_PARENT,
+                             "missing_parent.tscn": MISSING_PARENT})
+    payload, result = check_project(project)
+    assert payload["instantiate"] is True, payload
+    assert payload["failed_count"] == 2, payload
+    failed = {entry["path"]: entry["reason"] for entry in payload["failed"]}
+    assert set(failed) == {"res://scenes/root_with_parent.tscn", "res://scenes/missing_parent.tscn"}, failed
+    for reason in failed.values():
+        assert "instantiate() returned null" in reason, reason
+        assert "Invalid scene" in reason, reason
+    # The engine's own errors must reach stderr for the documented
+    # `2>&1 | godot_log_parser.py` pipe to pick them up.
+    assert "Invalid scene: root node Root cannot specify a parent node" in result.stderr, result.stderr
+    assert "Invalid scene: node Child does not specify its parent node" in result.stderr, result.stderr
+    assert result.returncode != 0, "a failed file must make the dispatcher exit non-zero"
+
+
+def test_invalid_scene_hierarchies_fail_validate_project() -> None:
+    if not godot_available():
+        print("SKIP test_invalid_scene_hierarchies_fail_validate_project (no godot)")
+        return
+    report = validate(scene_project({"root_with_parent.tscn": ROOT_WITH_PARENT,
+                                     "missing_parent.tscn": MISSING_PARENT}))
+    assert report["ok"] is False, report
+    assert report["_returncode"] == 1, report["_returncode"]
+    assert report["static"]["failed_count"] == 2, report["static"]
+    hierarchy = [d for d in report["diagnostics"] if d["category"] == "scene_hierarchy"]
+    assert len(hierarchy) == 2, report["diagnostics"]
+    assert all(d["severity"] == "error" for d in hierarchy), hierarchy
+
+
+def test_instantiate_can_be_turned_off() -> None:
+    """The opt-out restores the old load-only behaviour, both op and wrapper."""
+    if not godot_available():
+        print("SKIP test_instantiate_can_be_turned_off (no godot)")
+        return
+    project = scene_project({"root_with_parent.tscn": ROOT_WITH_PARENT,
+                             "missing_parent.tscn": MISSING_PARENT})
+    payload, result = check_project(project, {"instantiate": False})
+    assert payload["instantiate"] is False, payload
+    assert payload["failed_count"] == 0, payload
+    assert payload["scenes_instantiated"] == 0, payload
+    assert "Invalid scene" not in result.stderr, result.stderr
+
+    report = validate(project, "--no-instantiate")
+    assert report["ok"] is True, report
+    assert report["static"]["instantiate"] is False, report["static"]
+
+
+def test_unknown_check_project_parameter_is_still_rejected() -> None:
+    if not godot_available():
+        print("SKIP test_unknown_check_project_parameter_is_still_rejected (no godot)")
+        return
+    result = dispatch(scene_project({"flat.tscn": FLAT_TREE}), "check_project", {"instantiat": True})
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "Unknown parameter for check_project: instantiat" in result.stderr, result.stderr
+    assert "did you mean instantiate" in result.stderr, result.stderr
+
+
+def test_vanished_parent_path_is_reported_as_a_warning() -> None:
+    """The engine reparents the node and only warns, so this is not a failure —
+    but the warning must reach stderr, carry the scene path, and fail a
+    --warnings-as-errors run."""
+    if not godot_available():
+        print("SKIP test_vanished_parent_path_is_reported_as_a_warning (no godot)")
+        return
+    project = scene_project({"vanished_parent.tscn": VANISHED_PARENT})
+    payload, result = check_project(project)
+    assert payload["failed_count"] == 0, payload
+    assert payload["scenes_instantiated"] == 1, payload
+    assert "has vanished when instantiating" in result.stderr, result.stderr
+    assert "res://scenes/vanished_parent.tscn" in result.stderr, result.stderr
+
+    report = validate(project)
+    warnings = [d for d in report["diagnostics"] if d["category"] == "scene_hierarchy"]
+    assert len(warnings) == 1, report["diagnostics"]
+    assert warnings[0]["severity"] == "warning", warnings[0]
+    assert warnings[0]["file"] == "res://scenes/vanished_parent.tscn", warnings[0]
+    assert report["ok"] is True, "a vanished parent path is a warning, not an error"
+    strict = validate(project, "--warnings-as-errors")
+    assert strict["ok"] is False, strict
+    assert strict["_returncode"] == 1, strict["_returncode"]
+
+
+def test_flat_tree_still_passes_the_instantiate_pass() -> None:
+    """Documented non-catch: a fully flat tree is a valid scene. Only
+    inspect_scene reveals it, and the docs must not claim otherwise."""
+    if not godot_available():
+        print("SKIP test_flat_tree_still_passes_the_instantiate_pass (no godot)")
+        return
+    report = validate(scene_project({"flat.tscn": FLAT_TREE}))
+    assert report["ok"] is True, report
+    assert report["counts"]["errors"] == 0 and report["counts"]["warnings"] == 0, report["counts"]
+
+
+def test_healthy_project_passes_with_instantiate_on() -> None:
+    if not godot_available():
+        print("SKIP test_healthy_project_passes_with_instantiate_on (no godot)")
+        return
+    payload, result = check_project(fixture_copy())
+    assert payload["failed_count"] == 0, payload
+    assert payload["scenes_instantiated"] == payload["counts"]["scenes"] > 0, payload
+    assert result.returncode == 0, result.stdout + result.stderr
+    report = validate(FIXTURE_ROOT)
+    assert report["ok"] is True, report
+    assert report["static"]["scenes_instantiated"] > 0, report["static"]
 
 
 def cleanup() -> None:

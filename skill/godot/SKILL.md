@@ -1,6 +1,6 @@
 ---
 name: godot
-description: Godot project development, inspection, structured resource and project-setting editing, tileset and tilemap authoring, GridMap painting, theme and stylebox authoring, spritesheet and keyframe animation, audio bus routing, 3D mesh-collision and CSG baking, sprite-silhouette collision, 2D/3D navigation-mesh baking, glTF export, global shader uniforms, multiplayer replication config, import auditing, debugging, unit-test running, deterministic input and screenshot scenarios, runtime and performance validation, architecture design, creative content integration, and export preparation. Use when Codex needs to inspect or modify Godot projects, build scenes and UI, wire scripts and signals, paint TileMapLayer or GridMap levels, author Theme resources, build AnimationPlayer clips or SpriteFrames atlases, set up audio buses, bake mesh/CSG collision or navigation meshes, trace collision from sprites, export glTF, edit InputMap, autoloads, or shader globals, run GUT/GdUnit4 tests, validate GDScript/C#/GDExtension/editor plugins, test gameplay flows, add project-native art/music/story content, export mobile/web/desktop/server/visionOS builds, create mesh libraries, or repair resource UIDs. Designed for Godot 4.7 and compatible with Godot 4.x; prefer host-native Godot tools when exposed and use the bundled portable workflows otherwise.
+description: Godot project development, inspection, structured resource and project-setting editing, tileset and tilemap authoring, GridMap painting, theme and stylebox authoring, game UI layout and game-feel theming, spritesheet and keyframe animation, audio bus routing, 3D mesh-collision and CSG baking, sprite-silhouette collision, 2D/3D navigation-mesh baking, glTF export, global shader uniforms, multiplayer replication config, import auditing, debugging, unit-test running, deterministic input, text UI-layout report, and screenshot scenarios, runtime and performance validation, architecture design, creative content integration, and export preparation. Use when Codex needs to inspect or modify Godot projects, build scenes and UI, lay out and theme game menus, HUDs, or dialog boxes, hand-write or verify .tscn scene text, keep generated GDScript typed and parse-safe, wire scripts and signals, paint TileMapLayer or GridMap levels, author Theme resources, build AnimationPlayer clips or SpriteFrames atlases, set up audio buses, bake mesh/CSG collision or navigation meshes, trace collision from sprites, export glTF, edit InputMap, autoloads, or shader globals, run GUT/GdUnit4 tests, validate GDScript/C#/GDExtension/editor plugins, test gameplay flows and verify UI layouts as text without screenshots, add project-native art/music/story content, export mobile/web/desktop/server/visionOS builds, create mesh libraries, or repair resource UIDs. Designed for Godot 4.7 and compatible with Godot 4.x; prefer host-native Godot tools when exposed and use the bundled portable workflows otherwise.
 ---
 
 # Godot
@@ -21,10 +21,13 @@ Use this skill to inspect and modify Godot projects with the bundled workflows, 
 - Read `export_presets.cfg` before planning export work. Reuse the preset names, bundle identifiers, signing settings, and feature tags that already exist instead of inventing replacements.
 - Require a local `godot` CLI with shell access before using the bundled dispatcher fallback, runtime runner, or CLI export wrapper. The bundled APIs are designed against the current stable Godot docs and verified on Godot `4.7` (compatible with Godot 4.x).
 - Read `references/export_targets.md` only when the task involves packaging, signing, or shipping builds for Android, iOS, Web, Windows, or macOS.
+- Read `references/gdscript_conventions.md` before writing or editing any `.gd` file. Generated GDScript must parse and boot first-try: annotate every variable, parameter, and return type, and never use `:=` where the right-hand side has no concrete static type (`$Node`, `%Unique`, `get_node()`, `instantiate()`, `Dictionary`/`Array` reads, `JSON.parse_string()`, `null`, or a call into an untyped function). Godot rejects those at parse time — with `inference_on_variant` shipping set to error — so the project will not start at all.
 - Read `references/debugging.md` when the task involves running the project, reading the Godot debugger's errors, and fixing them.
 - Read `references/automation_api.md` when using inspection, `resource_batch`, `project_batch`, tileset/tilemap/gridmap/theme/animation/audio-bus authoring, collision/CSG/navmesh baking, glTF export, replication config, unit-test running, import audit, scenario, environment probe, validation, or export preflight APIs.
 - Read `references/authoring_recipes.md` when the task involves shaders/ShaderMaterial, particles, environment/sky, fonts, multiplayer replication, 3D import options, GDExtension, or feature tags — it gives the generic-op recipes and lists what is editor-only and must not be attempted headlessly (LightmapGI/occluder/reflection-probe bakes, VisualShader graphs).
 - Read `references/vfx_2d.md` when the task involves 2D lighting, particles, parallax, trails, paths, or tile-based levels — it also lists the 4.3+ node deprecations (`TileMap` → `TileMapLayer`, `ParallaxBackground` → `Parallax2D`).
+- Read `references/game_ui.md` when the task involves menus, HUDs, dialogs, inventories, or any `Control` work — it gives the container-first layout doctrine (the fix for sibling controls piling up at `(0, 0)`), runnable title/HUD/pause/dialog `scene_batch` skeletons, a complete game `Theme`, and the pixel-art UI rules.
+- Read `references/tscn_format.md` whenever a `.tscn` or `.tres` will be written or patched as text — a host without shell access cannot run the bundled dispatcher, or an entire new scene is being authored from scratch. Hand-written node hierarchies fail silently: a tree where every node carries `parent="."` loads with zero errors and stacks every `Control` at (0,0), and `check_project` does not detect it.
 - Read `references/tween.md` when adding code-driven juice (punches, fades, shakes); Tweens are runtime-only and ship inside scripts via `attach_script`.
 - Read `references/localization.md` when translating game text or wiring translation files (note: POT template generation is editor-only in Godot 4.x).
 - Read `references/ci.md` when setting up automated test or export pipelines.
@@ -75,10 +78,13 @@ godot --headless --debug --ignore-error-breaks --path /absolute/path/to/project 
 ```
 
 - `check_project` statically loads every GDScript, scene, shader, resource, GDExtension, and editor plugin (or just a `{"project_path":"subdir"}` subtree) and prints a JSON summary of failures. Piping its combined output through `godot_log_parser.py` yields line-level diagnostics. Keep `--debug --ignore-error-breaks` on the command: because this loads every file, it is the pass that reports the warnings of every script, and without it Godot emits no warnings at all.
+- Scenes are instantiated as well as loaded (`{"instantiate": false}` opts out). `load()` accepts every broken node hierarchy; only `PackedScene.instantiate()` returns null on a root that carries `parent=` or a non-root node with no `parent=` (`ERROR: Invalid scene: …`, reported in `failed[]`), and only instantiating prints the `WARNING: Parent path … has vanished` a mistyped `parent=` produces. A fully flat tree is still valid and silent — only `inspect_scene` catches it. Instantiating runs each scene root script's `_init()` and its stored-property setters, not `_ready`; autoloads are available, so that is not a source of false failures.
 - A `failed_count` of 0 is not by itself a pass. Godot degrades gracefully where the editor is fatal (a scene with a missing `[ext_resource]` still loads and instantiates), so read the parsed diagnostics too.
 - Shaders are compiled, not just loaded: `check_project` assigns each `.gdshader` to a `ShaderMaterial` to force the compile, because `load()` alone accepts a file full of syntax errors. The resulting `SHADER ERROR:` carries no path of its own, so the op prints a `Compiling shader: <path>` marker that `godot_log_parser.py` uses to attribute it — keep the two on the same captured stream.
-- Run `python3 scripts/debug/validate_project.py /absolute/project --pretty` for the comprehensive pass: it runs `check_project` with the debugger attached, parses the captured log into `counts`/`diagnostics`, refuses to report `ok` while any error-level diagnostic is present, and builds C# solutions when a `.csproj` exists. Add `--warnings-as-errors` to make warnings fail the run.
+- Run `python3 scripts/debug/validate_project.py /absolute/project --pretty` for the comprehensive pass: it runs `check_project` with the debugger attached and scene instantiation on, parses the captured log into `counts`/`diagnostics`, refuses to report `ok` while any error-level diagnostic is present, and builds C# solutions when a `.csproj` exists. Add `--warnings-as-errors` to make warnings fail the run (this is what turns a vanished-parent warning into a failure); `--no-instantiate` skips the instantiate pass.
 - Use `godot_log_parser.py` on its own to structure any Godot log you already have: `python3 /absolute/path/to/godot/scripts/debug/godot_log_parser.py path/to/run.log`.
+- Run every script you generate or edit through this pass before finishing. Parse errors are the most common cause of a project that will not boot, and `references/gdscript_conventions.md` plus the table in `references/debugging.md` map each message Godot emits to its cause and fix.
+- After adding any script with a `class_name`, run `godot --headless --path /absolute/path/to/project --import` before validating. Global class names resolve from `.godot/global_script_class_cache.cfg`, which a `--script` run does not rebuild — until then every other script referencing the new class fails with `Parse Error: Identifier "Foo" not declared in the current scope.`
 
 ### Probe And Run Deterministic Scenarios
 
@@ -88,7 +94,9 @@ python3 /absolute/path/to/godot/scripts/debug/run_scenario.py /absolute/project 
 ```
 
 - Use the environment probe before platform or native-code work to report the Godot version, CLI capabilities, export templates, host tools, and project languages/extensions/plugins.
-- Use `run_scenario.py` for action/key/mouse/joypad input, NodePath property assertions, log assertions, Viewport PNG capture, and performance thresholds. It selects rendered mode automatically when screenshots are present and stays headless otherwise.
+- Use `run_scenario.py` for action/key/mouse/joypad input, NodePath property assertions, log assertions, `ui_report` text UI dumps, Viewport PNG capture, and performance thresholds. It selects rendered mode automatically when screenshots are present and stays headless otherwise.
+- Add a `ui_report` step to read the laid-out UI as text: every visible Control's path, class, and post-layout global rect, plus `findings` for zero-sized, fully offscreen, and overlapping siblings. `"fail_on": ["overlap", "zero_size", "offscreen"]` turns a broken layout into a failed scenario — the reliable way to catch UI where every control stacks at (0, 0). It resolves headless and never forces a rendered window.
+- When you cannot look at images, do not rely on screenshots: instrument with `log_marker` plus targeted prints, run the session with `--log-file`, dump `ui_report` at each moment that matters, assert NodePath properties, and parse the log with `scripts/debug/godot_log_parser.py`. See "Verification Without Vision" in `references/automation_api.md`.
 - Read `references/automation_api.md` for the scenario and assertion schema.
 
 ### Project Export Through The Wrapper
@@ -123,10 +131,11 @@ python3 /absolute/path/to/godot/scripts/export/export_project.py \
 1. Prefer `scene_batch` for multi-step work so the scene loads once, actions run in memory, and the scene saves only if every action succeeds.
 2. Use `create_scene` when you only need a root scene, then follow with standalone operations if batching is unnecessary.
 3. Use `add_node` or `instantiate_scene` to build structure, `configure_node` for general properties and metadata, `configure_control` for `Control` layout and theme overrides, and `attach_script` plus `connect_signal` to finish behavior wiring.
-4. Keep `load_sprite` for compatibility, but prefer `configure_node` for direct `texture` assignment on sprite-compatible nodes.
-5. Run the project after non-trivial edits instead of assuming the scene still loads.
-6. After any functional change, actively open the game and exercise the changed feature or flow instead of stopping at a successful boot. Check whether the behavior matches the request, whether the UI or gameplay state updates correctly, and whether obvious regressions or bugs appear.
-7. After the validation run, inspect the logs for `error` and `warning` output. If the feature misbehaves or either log level appears, treat the task as unfinished, fix the issue, and rerun until the behavior and logs are both clean.
+4. For `Control` work, read `references/game_ui.md` and build the layout out of containers before touching anchors. A bare `Control` does not position its children, so absolutely-positioned siblings all resolve to `(0, 0)` and overlap — that single mistake is the most common cause of broken game UI.
+5. Keep `load_sprite` for compatibility, but prefer `configure_node` for direct `texture` assignment on sprite-compatible nodes.
+6. Run the project after non-trivial edits instead of assuming the scene still loads. If any part of the scene was hand-written as text, also run `inspect_scene` and confirm the reported node `path`s nest as intended — `check_project` and a clean boot both pass on a silently flattened hierarchy (see `references/tscn_format.md`).
+7. After any functional change, actively open the game and exercise the changed feature or flow instead of stopping at a successful boot. Check whether the behavior matches the request, whether the UI or gameplay state updates correctly, and whether obvious regressions or bugs appear.
+8. After the validation run, inspect the logs for `error` and `warning` output. If the feature misbehaves or either log level appears, treat the task as unfinished, fix the issue, and rerun until the behavior and logs are both clean.
 
 ### Add Art, Music, Or Story
 
@@ -163,21 +172,21 @@ python3 /absolute/path/to/godot/scripts/export/export_project.py \
 
 - Use `scene_batch` as the default scene editing entrypoint for script and UI work.
 - Use `configure_control` when a `Control` node needs presets, anchors, offsets, size flags, minimum size, or theme overrides.
-- Use `attach_script`, `connect_signal`, and `disconnect_signal` to wire scene logic without hand-editing `.tscn` files.
+- Use `attach_script`, `connect_signal`, and `disconnect_signal` to wire scene logic without hand-editing `.tscn` files. When a host cannot run the dispatcher at all, follow `references/tscn_format.md` for the text format and its mandatory verification loop.
 - Use `remove_node`, `reparent_node`, and `reorder_node` to refactor hierarchy after the scene already exists.
 - Use `build_sprite_frames` to turn a frame directory or explicit frame list into a `SpriteFrames` resource on an `AnimatedSprite2D`.
 - Use `export_mesh_library` to build a `MeshLibrary` from a 3D scene for `GridMap`.
 - Use `get_uid` to inspect a resource UID sidecar and any engine-reported UID metadata when a project uses `.uid` files.
 - Use `resave_resources` or the server's equivalent project-wide resave operation to attempt `.uid` sidecar regeneration, then verify the reported created and still-missing counts instead of assuming every resave produced a UID.
-- Use `run_project.py` to run the project and capture the debugger's runtime errors as structured diagnostics, and `check_project` to statically validate that every script, scene, shader, and resource compiles and loads.
+- Use `run_project.py` to run the project and capture the debugger's runtime errors as structured diagnostics, and `check_project` to validate that every script, scene, shader, and resource compiles, loads, and — for scenes — instantiates.
 - Use `inspect_project`, `inspect_scene`, and `inspect_resource` before editing unfamiliar projects; request full file lists or property schemas only when needed.
 - Use `resource_batch` for transactional Resource creation, duplication, property/indexed-property updates, metadata, builder-method calls (`call_method` for APIs like `Gradient.add_point`, `Theme.set_color`, `Animation.add_track`, `TileSet.add_source`), and save.
 - Use `project_batch` for structured ProjectSettings, InputMap, autoload, layer-name, main-scene, and translation edits.
 - Use `audit_imports` or `scripts/import/import_project.py` to detect missing, invalid, stale, and orphaned import artifacts and optionally reimport first.
-- Use `validate_project.py` for GDScript/C#/GDExtension/plugin validation, and `run_scenario.py` for deterministic behavior, screenshot, log, and performance checks.
+- Use `validate_project.py` for GDScript/C#/GDExtension/plugin validation, and `run_scenario.py` for deterministic behavior, text UI-layout (`ui_report`), screenshot, log, and performance checks.
 - Use `build_tileset` to author a `TileSet` (atlas sources, exposed tiles, per-tile collision/custom-data/terrains via `tile_defaults`) and `paint_tilemap` to assign it and paint/fill/erase cells or run `terrain_fills` autotiling on a `TileMapLayer`. Tiles without collision polygons are decorative — pass `"collision": "full_cell"` for solid ground.
 - Use `paint_gridmap` to paint a `GridMap` (the 3D parallel to `paint_tilemap`) from a `MeshLibrary` built with `export_mesh_library`.
-- Use `build_theme` to author a `Theme` grouped by control type (inline styleboxes, hex or typed colors, type variations); wire it project-wide with `project_batch` `set_setting` on `gui/theme/custom`.
+- Use `build_theme` to author a `Theme` grouped by control type (inline styleboxes, hex or typed colors, type variations); wire it project-wide with `project_batch` `set_setting` on `gui/theme/custom`. Author every interactive state (`normal`/`hover`/`pressed`/`focus`/`disabled`), not just `normal`; see `references/game_ui.md`.
 - Use `bake_collision` to generate a `StaticBody3D`/`CollisionShape3D` from a `MeshInstance3D` (trimesh/convex/multi_convex), `collision_from_sprite` to trace `CollisionPolygon2D` shapes from a sprite's alpha, and `bake_csg` to freeze a `CSGShape3D` tree into a static mesh (+ optional collision, optional in-place replacement).
 - Use `resource_batch` `bake_navmesh` to bake a `NavigationPolygon` (2D) or `NavigationMesh` (3D) from procedural outlines/faces (sync bake, headless-safe), then assign it to a `NavigationRegion2D/3D` with `configure_node`.
 - Use `gltf_export` to write a `.glb`/`.gltf` from an edited scene, `project_batch` `set_shader_global` to author `[shader_globals]` uniforms, and `build_replication_config` to author a `SceneReplicationConfig` for a `MultiplayerSynchronizer`.
@@ -226,7 +235,7 @@ python3 /absolute/path/to/godot/scripts/export/export_project.py \
 - `remove_node`, `reparent_node`, `reorder_node`: mutate existing hierarchy without rewriting the scene by hand.
 - `get_uid`: inspect `file_path`, returning the `.uid` sidecar path, whether that sidecar exists, and any engine-reported UID text when available.
 - `resave_resources`: resave scenes plus `.gd`, `.shader`, and `.gdshader` resources under `project_path`, then report how many `.uid` sidecars were actually created versus still missing.
-- `check_project`: statically load every GDScript, scene, shader, resource, GDExtension, and editor plugin under `project_path` (default `res://`) and report failures by path, kind, and reason.
+- `check_project`: load every GDScript, scene, shader, resource, GDExtension, and editor plugin under `project_path` (default `res://`) and report failures by path, kind, and reason. Scenes are also instantiated, which is what catches an invalid node hierarchy; set `instantiate` to `false` for a load-only pass that runs no project code.
 
 ## Respect The Bundled Implementation
 
@@ -311,6 +320,7 @@ godot --headless --path /absolute/path/to/project \
 - Confirm that every write target is inside the intended Godot project.
 - Confirm that the scene still loads and that the project boots after structural edits.
 - Confirm that the changed feature was exercised in a live run when the environment allowed it, and that the observed behavior matched the request without obvious regressions.
+- Confirm that UI work was verified as laid out, not just saved: run `run_scenario`'s `ui_report` step with `{"fail_on": ["any"]}` at two `viewport_size` values and confirm zero `zero_size`, `offscreen`, and `overlap` findings. Confirm a project `Theme` is wired through `gui/theme/custom` with a visibly distinct `focus` stylebox — an unthemed `Control` tree ships the engine's editor-gray default and reads as a web form, not game UI.
 - Confirm that any new art, music, or story content matches the requested direction, or the pixel-art default when no direction was provided and no project style overrode it.
 - Confirm that generated sprite-like assets used transparent output first, or a flat pure-green chroma-key background plus local cutout as the fallback.
 - Confirm that frame animation work landed as a validated frame sequence or `SpriteFrames` resource, not an unusable loose asset dump.
@@ -318,4 +328,4 @@ godot --headless --path /absolute/path/to/project \
 - Confirm that every exported artifact came from the intended preset and that the artifact path matches the target platform's existing convention.
 - Smoke test at least one exported build for the requested targets instead of assuming the preset is valid.
 - Confirm architecture work did not collapse unrelated responsibilities into a single node script, autoload, or generic manager.
-- Prefer incremental scene changes over rewriting `.tscn` files manually.
+- Prefer incremental scene changes over rewriting `.tscn` files manually. When a `.tscn` was hand-written or hand-edited anyway, confirm `inspect_scene` reports the intended nesting and that every `[connection]` `source`/`target` matches a real node path before finishing — both classes of mistake load and boot cleanly (`references/tscn_format.md`).

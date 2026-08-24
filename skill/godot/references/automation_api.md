@@ -450,7 +450,33 @@ python3 scripts/debug/validate_project.py /absolute/project --pretty
 
 `validate_project.py` loads GDScript, scenes, shaders, resources, GDExtensions, and editor plugins. When a root `.csproj` exists, it also runs Godot's `--build-solutions`; override with `--csharp always|never`.
 
-It runs Godot with `-d --ignore-error-breaks`, so its report includes the GDScript warnings the editor shows — which a plain headless run never prints — for **every** script in the project, not just the ones a boot happens to load. Output carries `counts` and `diagnostics` (same shape as `run_project.py`) alongside the file-level `static` summary, and `ok` is false whenever an error-level diagnostic appears even if every file technically loaded. Flags: `--warnings-as-errors` to fail on warnings, `--no-warnings` to drop them from the report, `--no-debugger` to reproduce the old warning-free behaviour.
+It runs Godot with `-d --ignore-error-breaks`, so its report includes the GDScript warnings the editor shows — which a plain headless run never prints — for **every** script in the project, not just the ones a boot happens to load. Output carries `counts` and `diagnostics` (same shape as `run_project.py`) alongside the file-level `static` summary, and `ok` is false whenever an error-level diagnostic appears even if every file technically loaded. Flags: `--warnings-as-errors` to fail on warnings, `--no-warnings` to drop them from the report, `--no-debugger` to reproduce the old warning-free behaviour, `--no-instantiate` to skip the scene-instantiation pass below.
+
+### check_project And The Instantiate Pass
+
+`validate_project.py` is a wrapper around the `check_project` operation, which can also be called directly:
+
+```bash
+godot --headless --debug --ignore-error-breaks --path /absolute/project \
+  --script /absolute/godot/scripts/core/dispatcher.gd \
+  check_project '{}' 2>&1 \
+  | python3 /absolute/godot/scripts/debug/godot_log_parser.py -
+```
+
+Parameters: `project_path` (default `res://`, restricts the walk to a subtree) and `instantiate` (bool, **default `true`**). The JSON summary reports `checked`, `failed_count`, `failed` (path / kind / reason), `counts` per kind, plus `instantiate` and `scenes_instantiated`.
+
+Every `.tscn`/`.scn` that loads is also passed through `PackedScene.instantiate()`. This matters because `load()` accepts every broken node hierarchy — a directory of scenes containing every hierarchy mistake in `references/tscn_format.md` used to report `"failed_count": 0`. What the pass adds:
+
+| Mistake in the `.tscn` | What instantiating produces | Reported as |
+| --- | --- | --- |
+| Root `[node]` carries `parent="."` | `ERROR: Invalid scene: root node X cannot specify a parent node.`; `instantiate()` returns `null` | **Failure** in `failed[]` + an error diagnostic |
+| Non-root `[node]` has no `parent=` | `ERROR: Invalid scene: node X does not specify its parent node.`; `instantiate()` returns `null` | **Failure** in `failed[]` + an error diagnostic |
+| `parent=` names a node that does not exist | `WARNING: Parent path './VBox' for node 'Label' has vanished when instantiating: 'res://…tscn'.`; the node is reparented to the root as `VBox#Label` | **Warning** only — the scene still instantiates. `--warnings-as-errors` makes it fail |
+| Every node carries `parent="."` (fully flat tree) | Nothing at all — a flat tree is valid | **Not caught.** Only `inspect_scene` reveals it |
+
+The two `Invalid scene:` errors name the offending *node*, never the scene, so read the scene path from the `failed[]` entry (the log parser files them under category `scene_hierarchy`; the vanished-parent warning does name its scene and is attributed to it). A failed instantiate also makes the engine leak the half-built nodes, so a run that reports one ends with a harmless `WARNING: N ObjectDB instances were leaked at exit`.
+
+**What instantiating executes.** The scene root script's `_init()`, and every script setter for a property stored in the `.tscn` (an `@export` with a custom setter runs with the stored value). `_enter_tree()` / `_ready()` do **not** run — nothing is added to a tree — and `get_tree()` is `null` inside `_init()` and inside those setters. That is byte-for-byte what the running game does when it instantiates the same scene, so an error raised here is an error the game would raise too. Autoload singletons **are** available (the dispatcher defers the operation until the `SceneTree` has registered them), so a scene script that reads one is not a false failure. Pass `{"instantiate": false}` (or `--no-instantiate`) for a pure load-only pass that runs no project code — the right choice only when a scene's `_init()` has side effects you do not want, since it re-opens the hierarchy blind spot.
 
 ## Scenario Runner
 
@@ -480,12 +506,102 @@ Create a scenario JSON and run it with `scripts/debug/run_scenario.py PROJECT SC
 }
 ```
 
-Step types are `wait_frames`, `wait_seconds`, `action`, `key`, `mouse_button`, `mouse_motion`, `joypad_button`, `joypad_motion`, `assert`, `wait_until`, `set_property`, `screenshot`, and `log_marker`.
+Step types are `wait_frames`, `wait_seconds`, `action`, `key`, `mouse_button`, `mouse_motion`, `joypad_button`, `joypad_motion`, `assert`, `wait_until`, `set_property`, `screenshot`, `ui_report`, and `log_marker`.
 
 - `wait_until`: polls a property assertion every frame until it passes or `timeout_seconds` (default 5) elapses — prefer it over guessing `wait_frames` counts. Fields match `assert` (`node_path`, `property`, `expected`, `operator`, `tolerance`).
 - `set_property`: writes a typed value to a node's (sub)property and waits one frame — useful for arranging state before an interaction.
+- `ui_report`: dumps the laid-out UI as text and machine-checks the layout — see below.
 
 Property assertion operators are `equals`, `not_equals`, `greater_than`, `greater_or_equal`, `less_than`, `less_or_equal`, `contains`, and `approx`. Performance monitors are `fps`, `process_time`, `physics_process_time`, `static_memory`, `node_count`, `resource_count`, `draw_calls`, `primitives`, and `video_memory`; statistics are `average`, `minimum`, and `maximum`.
+
+The root viewport is always sized before the scene is added: to `viewport_size` when given, otherwise to the project's own `display/window/size/viewport_width`/`viewport_height`. A headless display server opens a 64x64 window, so without this every anchor, container layout and viewport-space input coordinate would resolve against a viewport no player ever sees.
+
+### ui_report
+
+Walks the scene tree and reports every visible Control's post-layout global rect, then machine-checks the layout. It is how to see the UI without looking at an image, and it is what catches the failure mode where controls authored with `layout_mode = 0` and no offsets all land on each other at (0, 0) — a screenshot shows that instantly, no other text check shows it at all. Rects resolve identically headless, and `ui_report` alone never forces a rendered window.
+
+- `node_path` (default `"."`): subtree to walk. Report paths stay relative to the **scene root** either way, so they paste straight into a later `node_path`.
+- `include_hidden` (default `false`): also list controls that are not visible in tree. Hidden controls are described but never produce findings.
+- `path` (optional): also write the report to a JSON file (`res://`, `user://`, or absolute).
+- `label` (optional): names the report in the result; defaults to `steps[<index>]`.
+- `fail_on` (optional): array of finding kinds that fail the scenario the way a failed assertion does, or `["any"]`. An unknown kind is rejected instead of silently gating on nothing.
+- `min_overlap_ratio` (default `0.1`): the share of the smaller rect two siblings must share before the overlap is reported. Keeps 1px seams quiet.
+- `strict_overlap` (default `false`): set to also report the backdrop case below.
+- `settle_frames` (default `2`, minimum 1): frames awaited before sampling. Containers place their children through a deferred sort, so rects read in the same frame the tree changed still say (0, 0) and every child would look stacked. The step waits so callers never have to.
+
+Reports arrive in `ui_reports` on the result JSON, in step order, and are written verbatim to `path`:
+
+```json
+{
+  "label": "boot",
+  "node_path": ".",
+  "passed": false,
+  "rect_format": "[x, y, width, height]",
+  "viewport": {"width": 1280, "height": 720},
+  "counts": {"controls": 4, "visible": 4, "hidden": 0, "findings": 1},
+  "controls": [
+    {"path": ".", "class": "Control", "rect": [0, 0, 1280, 720]},
+    {"path": "Backdrop", "class": "ColorRect", "rect": [0, 0, 1280, 720]},
+    {"path": "Panel/Title", "class": "Label", "rect": [0, 0, 160, 30], "text": "Inventory"},
+    {"path": "Panel/Close", "class": "Button", "rect": [0, 0, 160, 31], "text": "Close"}
+  ],
+  "findings": [
+    {"kind": "overlap", "nodes": ["Panel/Title", "Panel/Close"],
+     "rects": [[0, 0, 160, 30], [0, 0, 160, 31]], "parent": "Panel",
+     "overlap_rect": [0, 0, 160, 30], "ratio": 1,
+     "message": "Panel/Title (Label) [0, 0, 160, 30] and Panel/Close (Button) [0, 0, 160, 31] cover 100% of the smaller rect, but their parent Panel (Control) leaves placement to the author"}
+  ],
+  "file": "/absolute/output/boot_ui.json"
+}
+```
+
+Control entries carry `text` when the node has a non-empty text property (trimmed to 60 characters), `top_level: true` when the node opts out of its parent's transform, and — only when `include_hidden` is set — `visible` plus `self_hidden` for the node that actually holds the `visible = false`. Findings always carry `kind`, `nodes`, `rects`, and a one-line `message`:
+
+- `zero_size`: a visible Control whose width or height is zero. Godot clamps a negative size to zero, so this covers inverted offsets too.
+- `offscreen`: a visible Control whose rect lies **entirely** outside its viewport (partially clipped controls are not reported).
+- `overlap`: two visible sibling Controls sharing at least `min_overlap_ratio` of the smaller rect under a parent that was not supposed to stack them. Also carries `parent`, `overlap_rect`, and `ratio`.
+
+The overlap rule, precisely. A pair is reported when the parent is **not** a `Container` (placement came from the author's anchors and offsets) or is one of the containers documented to lay children out side by side — `BoxContainer` (`HBoxContainer`/`VBoxContainer`), `GridContainer`, `FlowContainer`, `SplitContainer` — where an overlap really is a defect. Every other `Container` is skipped: `MarginContainer`, `PanelContainer`, `CenterContainer`, `AspectRatioContainer`, `ScrollContainer`, `SubViewportContainer` and `TabContainer` hand every child the same slot, so overlap there is the engine doing its job, and a custom `Container`'s sort rule is unknown so it is not second-guessed. Two further exemptions: a `top_level` control places itself in screen space and is left out of sibling pairing, and a `ColorRect`, `Panel`, `TextureRect`, `NinePatchRect` or `ReferenceRect` whose rect fully covers a sibling is treated as a background layer rather than an overlap — that last one is the only heuristic in the rule, and `strict_overlap: true` turns it off.
+
+There is deliberately no `text_clipped` finding: Godot clamps `Control.size` up to `get_combined_minimum_size()`, so a Label or Button rect is never smaller than its own text unless `clip_text`/`text_overrun_behavior` asked for truncation. Any check would have reported only deliberate elisions.
+
+A UI regression scenario, gated end to end:
+
+```json
+{
+  "scene_path": "scenes/hud.tscn",
+  "viewport_size": {"width": 1280, "height": 720},
+  "steps": [
+    {"type": "ui_report", "label": "boot", "path": "/absolute/output/boot_ui.json",
+     "fail_on": ["overlap", "zero_size", "offscreen"]},
+    {"type": "action", "action_name": "ui_accept", "pressed": true, "release_after": true},
+    {"type": "wait_until", "node_path": "Panels/Inventory", "property": "visible", "expected": true},
+    {"type": "ui_report", "label": "inventory-open", "node_path": "Panels/Inventory", "fail_on": ["any"]},
+    {"type": "log_marker", "message": "inventory-verified"}
+  ],
+  "assertions": [
+    {"assertion": "property", "node_path": "Panels/Inventory/Grid", "property": "columns", "expected": 4}
+  ],
+  "log_assertions": [{"regex": "ui_report inventory-open .* overlap=0"}]
+}
+```
+
+### Verification Without Vision
+
+Screenshots are worthless to a model that cannot look at images, and everything else the runner produces is text. Make images the optional garnish and run this loop instead:
+
+1. **Instrument the gameplay path.** Print one line per decision that matters (`print("[HUD] wave=%d hp=%d" % [wave, hp])`), and separate phases with `log_marker` steps so the log has section boundaries to search between.
+2. **Script the session**: `python3 scripts/debug/run_scenario.py PROJECT SCENARIO --log-file /tmp/run.log --pretty`. Input steps drive it deterministically and `wait_until` waits on state instead of guessed frame counts, so one run reaches the state worth checking.
+3. **Read the UI with `ui_report`** at every moment worth checking — after boot, after a panel opens, after a resolution change — and gate it with `fail_on` so a stacked, zero-sized or offscreen layout fails the run instead of waiting to be noticed. Scope big screens with `node_path`, and pass `path` when the report should outlive the run.
+4. **Assert the properties that carry the meaning**: `{"assertion": "property", "node_path": "HUD/Score", "property": "text", "expected": "1200"}`, plus `visible` and `node_exists` for the nodes a state change is supposed to add or reveal. Report paths are already in the right form to paste into `node_path`.
+5. **Parse the captured log**: `python3 scripts/debug/godot_log_parser.py /tmp/run.log --pretty` turns it into structured errors and warnings. The wrapper keeps `-d --ignore-error-breaks` on by default, so GDScript warnings the editor would show actually reach the log; `log_assertions` gate on the prints from step 1.
+6. **Read the exit code**: `0` only when every assertion, log assertion, performance assertion and gated `ui_report` finding passed.
+
+Each `ui_report` also prints one grep-able line, so step 5 can gate on the layout without parsing the payload:
+
+```
+[SCENARIO] ui_report inventory-open controls=12 visible=12 hidden=0 findings=0 zero_size=0 offscreen=0 overlap=0
+```
 
 ## Typed JSON Values
 

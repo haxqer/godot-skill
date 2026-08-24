@@ -44,6 +44,16 @@ def extract_payload(output: str) -> dict:
     return {"ok": False, "errors": ["scenario runner emitted no JSON payload"]}
 
 
+def needs_rendering(scenario: dict) -> bool:
+    """Only a screenshot needs a real framebuffer.
+
+    Everything else the runner reports — assertions, ui_report rects, performance
+    monitors — comes from the scene tree, which the headless dummy renderer
+    builds and lays out exactly as a windowed run does.
+    """
+    return any(step.get("type") == "screenshot" for step in scenario.get("steps", []))
+
+
 def compare(actual: float, operator: str, expected: float) -> bool:
     return {
         "less_than": actual < expected,
@@ -62,8 +72,7 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(f"Missing Godot project file: {project_path / 'project.godot'}")
     scenario = json.loads(scenario_path.read_text(encoding="utf-8"))
     runner = (args.runner or Path(__file__).with_name("scenario_runner.gd")).resolve()
-    needs_rendering = any(step.get("type") == "screenshot" for step in scenario.get("steps", []))
-    use_headless = args.headless or (not args.no_headless and not needs_rendering)
+    use_headless = args.headless or (not args.no_headless and not needs_rendering(scenario))
     command = [args.godot_bin]
     if use_headless:
         command.append("--headless")

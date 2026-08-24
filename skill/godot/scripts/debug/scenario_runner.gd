@@ -7,7 +7,13 @@ var scenario: Dictionary = {}
 var scene_root: Node
 var assertion_results: Array = []
 var screenshots: Array = []
+var ui_reports: Array = []
 var errors: Array[String] = []
+
+const UI_FINDING_KINDS = ["zero_size", "offscreen", "overlap"]
+# Controls whose only job is to fill an area behind their siblings. A backdrop
+# that fully covers a sibling is a background layer, not a layout mistake.
+const UI_BACKDROP_CLASSES = ["ColorRect", "Panel", "TextureRect", "NinePatchRect", "ReferenceRect"]
 
 const MONITORS = {
     "fps": Performance.TIME_FPS,
@@ -55,9 +61,17 @@ func _run() -> void:
         _finish({})
         return
 
+    # A headless run opens a 64x64 window, so anchors, container layout and
+    # viewport-space input coordinates would resolve against a viewport no
+    # player ever sees. Always size the root: the scenario's viewport_size when
+    # given, otherwise the project's own configured resolution.
     var viewport_size = scenario.get("viewport_size", {})
-    if viewport_size is Dictionary and not viewport_size.is_empty():
-        root.size = Vector2i(int(viewport_size.get("width", 1152)), int(viewport_size.get("height", 648)))
+    if not (viewport_size is Dictionary):
+        viewport_size = {}
+    root.size = Vector2i(
+        int(viewport_size.get("width", ProjectSettings.get_setting("display/window/size/viewport_width", 1152))),
+        int(viewport_size.get("height", ProjectSettings.get_setting("display/window/size/viewport_height", 648)))
+    )
     root.add_child(scene_root)
     current_scene = scene_root
     print("[SCENARIO] Loaded " + scene_path)
@@ -172,6 +186,9 @@ func _run_step(step: Dictionary, index: int) -> bool:
             await process_frame
         "screenshot":
             if not await _capture_screenshot(step, index):
+                return false
+        "ui_report":
+            if not await _run_ui_report(step, index):
                 return false
         "log_marker":
             print("[SCENARIO] " + str(step.get("message", "marker")))
@@ -311,6 +328,277 @@ func _capture_screenshot(step: Dictionary, index: int) -> bool:
     screenshots.append({"path": absolute_path, "width": image.get_width(), "height": image.get_height()})
     return true
 
+func _run_ui_report(step: Dictionary, index: int) -> bool:
+    # Text description of the laid-out UI, for callers that cannot look at a
+    # screenshot. Every rect is the post-layout global rect, so the report is
+    # the same thing a rendered window would show.
+    var label := str(step.get("label", "steps[%d]" % index))
+    var node_path := str(step.get("node_path", "."))
+    var subtree_root := _resolve_node(node_path)
+    if subtree_root == null:
+        _fail("Step %d ui_report node not found: %s" % [index, node_path])
+        return false
+
+    var fail_on: Array = []
+    var raw_fail_on = step.get("fail_on", [])
+    if not (raw_fail_on is Array):
+        _fail("Step %d ui_report fail_on must be an array" % index)
+        return false
+    for raw_kind in raw_fail_on:
+        var kind := str(raw_kind)
+        if kind == "any":
+            fail_on = UI_FINDING_KINDS.duplicate()
+            break
+        if not UI_FINDING_KINDS.has(kind):
+            _fail("Step %d ui_report fail_on has unknown kind '%s' (expected \"any\" or one of %s)" % [index, kind, ", ".join(UI_FINDING_KINDS)])
+            return false
+        fail_on.append(kind)
+
+    # Containers place their children through a deferred sort, so rects sampled
+    # in the same frame the scene (or any property feeding a minimum size) was
+    # touched still read (0, 0) and every child would look stacked. Settle here
+    # rather than making callers remember a wait_frames step.
+    await _wait_frames(max(int(step.get("settle_frames", 2)), 1))
+
+    var include_hidden := bool(step.get("include_hidden", false))
+    var min_overlap_ratio := clampf(float(step.get("min_overlap_ratio", 0.1)), 0.0, 1.0)
+    var strict_overlap := bool(step.get("strict_overlap", false))
+
+    # Paths stay relative to the scene root even when node_path scopes the walk,
+    # so every path in the report can be pasted straight into an assertion.
+    var collected: Array = []
+    _collect_controls(subtree_root, str(scene_root.get_path_to(subtree_root)), "", collected)
+
+    var entries: Array = []
+    var visible_records: Array = []
+    var hidden_count := 0
+    for record in collected:
+        var control: Control = record["node"]
+        var is_visible := control.is_visible_in_tree()
+        if not is_visible:
+            hidden_count += 1
+            if not include_hidden:
+                continue
+        var rect := control.get_global_rect()
+        var entry := {
+            "path": record["path"],
+            "class": control.get_class(),
+            "rect": _rect_array(rect)
+        }
+        var text_value := _control_text(control)
+        if not text_value.is_empty():
+            entry["text"] = text_value
+        if control.top_level:
+            entry["top_level"] = true
+        if include_hidden:
+            entry["visible"] = is_visible
+            if not control.visible:
+                entry["self_hidden"] = true
+        entries.append(entry)
+        if is_visible:
+            visible_records.append({
+                "node": control,
+                "path": record["path"],
+                "parent_path": record["parent_path"],
+                "rect": rect
+            })
+
+    var findings := _find_ui_issues(visible_records, min_overlap_ratio, strict_overlap)
+    var kind_counts := {}
+    for kind in UI_FINDING_KINDS:
+        kind_counts[kind] = 0
+    for finding in findings:
+        kind_counts[finding["kind"]] += 1
+
+    var gated: Array = []
+    for finding in findings:
+        if fail_on.has(finding["kind"]):
+            gated.append(finding)
+
+    var visible_rect := root.get_visible_rect() if root != null else Rect2()
+    var report := {
+        "label": label,
+        "node_path": node_path,
+        "passed": gated.is_empty(),
+        "rect_format": "[x, y, width, height]",
+        "viewport": {"width": _round_number(visible_rect.size.x), "height": _round_number(visible_rect.size.y)},
+        "counts": {
+            "controls": entries.size(),
+            "visible": visible_records.size(),
+            "hidden": hidden_count,
+            "findings": findings.size()
+        },
+        "controls": entries,
+        "findings": findings
+    }
+
+    var raw_path := str(step.get("path", ""))
+    if not raw_path.is_empty():
+        var absolute_path := raw_path
+        if raw_path.begins_with("res://") or raw_path.begins_with("user://"):
+            absolute_path = ProjectSettings.globalize_path(raw_path)
+        var directory_error := DirAccess.make_dir_recursive_absolute(absolute_path.get_base_dir())
+        if directory_error != OK and directory_error != ERR_ALREADY_EXISTS:
+            _fail("Failed to create ui_report directory: " + absolute_path.get_base_dir())
+            return false
+        report["file"] = absolute_path
+        var file := FileAccess.open(absolute_path, FileAccess.WRITE)
+        if file == null:
+            _fail("Failed to write ui_report %s: %s" % [absolute_path, error_string(FileAccess.get_open_error())])
+            return false
+        file.store_string(JSON.stringify(report, "  "))
+        file.close()
+
+    ui_reports.append(report)
+    print("[SCENARIO] ui_report %s controls=%d visible=%d hidden=%d findings=%d zero_size=%d offscreen=%d overlap=%d" % [
+        label, entries.size(), visible_records.size(), hidden_count, findings.size(),
+        kind_counts["zero_size"], kind_counts["offscreen"], kind_counts["overlap"]
+    ])
+    for finding in gated:
+        errors.append("UI finding (%s) in %s: %s" % [finding["kind"], label, finding["message"]])
+    return true
+
+func _collect_controls(node: Node, path: String, parent_path: String, out: Array) -> void:
+    if node is Control:
+        out.append({"node": node, "path": path, "parent_path": parent_path})
+    for child in node.get_children():
+        var child_path := str(child.name) if path == "." else path + "/" + str(child.name)
+        _collect_controls(child, child_path, path, out)
+
+func _find_ui_issues(records: Array, min_overlap_ratio: float, strict_overlap: bool) -> Array:
+    var findings: Array = []
+    var sized: Array = []
+    for record in records:
+        var control: Control = record["node"]
+        var rect: Rect2 = record["rect"]
+        if rect.size.x <= 0.0 or rect.size.y <= 0.0:
+            findings.append({
+                "kind": "zero_size",
+                "nodes": [record["path"]],
+                "rects": [_rect_array(rect)],
+                "message": "%s (%s) has a %s x %s rect at (%s, %s) — it draws nothing" % [
+                    record["path"], control.get_class(),
+                    _round_number(rect.size.x), _round_number(rect.size.y),
+                    _round_number(rect.position.x), _round_number(rect.position.y)
+                ]
+            })
+            continue
+        var viewport_rect := control.get_viewport_rect()
+        if not viewport_rect.intersects(rect):
+            findings.append({
+                "kind": "offscreen",
+                "nodes": [record["path"]],
+                "rects": [_rect_array(rect)],
+                "viewport_rect": _rect_array(viewport_rect),
+                "message": "%s (%s) rect %s lies entirely outside the viewport %s" % [
+                    record["path"], control.get_class(),
+                    str(_rect_array(rect)), str(_rect_array(viewport_rect))
+                ]
+            })
+        sized.append(record)
+
+    # Group by the real parent object: a Control's siblings are what its parent
+    # arranges, and non-Control nodes may sit between two Controls in the path.
+    var groups: Array = []
+    var group_by_parent := {}
+    for record in sized:
+        if (record["node"] as Control).top_level:
+            continue
+        var parent := (record["node"] as Control).get_parent()
+        if parent == null:
+            continue
+        var key := parent.get_instance_id()
+        if not group_by_parent.has(key):
+            group_by_parent[key] = groups.size()
+            groups.append({"parent": parent, "records": []})
+        groups[group_by_parent[key]]["records"].append(record)
+
+    for group in groups:
+        if not _overlap_is_meaningful(group["parent"]):
+            continue
+        var parent_note := "lays children out side by side" if group["parent"] is Container else "leaves placement to the author"
+        var members: Array = group["records"]
+        for first in range(members.size()):
+            for second in range(first + 1, members.size()):
+                var a: Dictionary = members[first]
+                var b: Dictionary = members[second]
+                var a_rect: Rect2 = a["rect"]
+                var b_rect: Rect2 = b["rect"]
+                var shared := a_rect.intersection(b_rect)
+                if shared.size.x <= 0.0 or shared.size.y <= 0.0:
+                    continue
+                var smaller_area: float = min(a_rect.get_area(), b_rect.get_area())
+                var ratio := shared.get_area() / smaller_area if smaller_area > 0.0 else 0.0
+                if ratio < min_overlap_ratio:
+                    continue
+                if not strict_overlap and (_is_backdrop_for(a, b) or _is_backdrop_for(b, a)):
+                    continue
+                var parent_path := str(a["parent_path"])
+                findings.append({
+                    "kind": "overlap",
+                    "nodes": [a["path"], b["path"]],
+                    "rects": [_rect_array(a_rect), _rect_array(b_rect)],
+                    "parent": parent_path if not parent_path.is_empty() else ".",
+                    "overlap_rect": _rect_array(shared),
+                    "ratio": _round_number(ratio),
+                    "message": "%s (%s) %s and %s (%s) %s cover %d%% of the smaller rect, but their parent %s (%s) %s" % [
+                        a["path"], (a["node"] as Control).get_class(), str(_rect_array(a_rect)),
+                        b["path"], (b["node"] as Control).get_class(), str(_rect_array(b_rect)),
+                        int(round(ratio * 100.0)),
+                        parent_path if not parent_path.is_empty() else ".",
+                        (group["parent"] as Node).get_class(),
+                        parent_note
+                    ]
+                })
+    return findings
+
+func _overlap_is_meaningful(parent: Node) -> bool:
+    # Overlap only means something where placement was authored: under a plain
+    # node the offsets/anchors are the author's, and the side-by-side containers
+    # below are documented never to stack. Every other Container (MarginContainer,
+    # PanelContainer, CenterContainer, AspectRatioContainer, ScrollContainer,
+    # SubViewportContainer, TabContainer) hands each child the same slot, and a
+    # custom Container's sort rule is unknown — neither is reported.
+    if not (parent is Container):
+        return true
+    return parent is BoxContainer or parent is GridContainer or parent is FlowContainer or parent is SplitContainer
+
+func _is_backdrop_for(candidate: Dictionary, other: Dictionary) -> bool:
+    var control: Control = candidate["node"]
+    var candidate_rect: Rect2 = candidate["rect"]
+    var other_rect: Rect2 = other["rect"]
+    if not candidate_rect.encloses(other_rect):
+        return false
+    for class_name_value in UI_BACKDROP_CLASSES:
+        if control.is_class(class_name_value):
+            return true
+    return false
+
+func _control_text(control: Control) -> String:
+    if not ("text" in control):
+        return ""
+    var raw = control.get("text")
+    if not (raw is String or raw is StringName):
+        return ""
+    var text_value := str(raw).strip_edges().replace("\n", " ")
+    if text_value.length() > 60:
+        text_value = text_value.substr(0, 57) + "..."
+    return text_value
+
+func _rect_array(rect: Rect2) -> Array:
+    return [
+        _round_number(rect.position.x),
+        _round_number(rect.position.y),
+        _round_number(rect.size.x),
+        _round_number(rect.size.y)
+    ]
+
+func _round_number(value: float) -> Variant:
+    var rounded := snappedf(value, 0.01)
+    if is_equal_approx(rounded, round(rounded)):
+        return int(round(rounded))
+    return rounded
+
 func _sample_performance(frames: int) -> Dictionary:
     var samples := {}
     for monitor_name in MONITORS:
@@ -376,6 +664,7 @@ func _finish(performance: Dictionary) -> void:
         "scene_path": _normalize_res_path(scenario.get("scene_path", "")),
         "assertions": assertion_results,
         "screenshots": screenshots,
+        "ui_reports": ui_reports,
         "performance": performance,
         "errors": errors
     }

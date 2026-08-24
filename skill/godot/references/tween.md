@@ -28,10 +28,11 @@ func fade_out(item: CanvasItem) -> void:
     tween.tween_callback(item.queue_free)
 
 # Parallel move + fade (chain() returns to sequential)
-var tween := create_tween()
-tween.set_parallel(true)
-tween.tween_property(panel, "position:y", 40.0, 0.25).as_relative()
-tween.tween_property(panel, "modulate:a", 1.0, 0.25)
+func slide_in(panel: Control) -> void:
+    var tween := create_tween()
+    tween.set_parallel(true)
+    tween.tween_property(panel, "position:y", 40.0, 0.25).as_relative()
+    tween.tween_property(panel, "modulate:a", 1.0, 0.25)
 
 # Screen shake via tween_method
 func shake(camera: Camera2D, strength: float = 8.0) -> void:
@@ -42,11 +43,12 @@ func shake(camera: Camera2D, strength: float = 8.0) -> void:
     tween.tween_callback(func(): camera.offset = Vector2.ZERO)
 
 # Looping idle bob
-var tween := create_tween().set_loops()
-tween.tween_property(sprite, "position:y", -4.0, 0.8).as_relative() \
-    .set_trans(Tween.TRANS_SINE)
-tween.tween_property(sprite, "position:y", 4.0, 0.8).as_relative() \
-    .set_trans(Tween.TRANS_SINE)
+func idle_bob(sprite: Node2D) -> void:
+    var tween := create_tween().set_loops()
+    tween.tween_property(sprite, "position:y", -4.0, 0.8).as_relative() \
+        .set_trans(Tween.TRANS_SINE)
+    tween.tween_property(sprite, "position:y", 4.0, 0.8).as_relative() \
+        .set_trans(Tween.TRANS_SINE)
 ```
 
 ## Rules Of Thumb

@@ -2,8 +2,8 @@
 """Validate a Godot project's resources, plugins, GDExtensions, and C# solutions.
 
 This runs the ``check_project`` dispatcher operation, which loads every script,
-scene, shader, and resource in the project, and reports what the engine said
-while doing it.
+scene, shader, and resource in the project — and instantiates every scene — then
+reports what the engine said while doing it.
 
 Two things make this match what the Godot editor shows, instead of the much
 quieter output a plain CLI run produces:
@@ -17,6 +17,15 @@ quieter output a plain CLI run produces:
   (a scene whose ``[ext_resource]`` is missing still loads and instantiates), so
   the file-level pass/fail list alone reports ``ok`` while the log carries the
   actual ``ERROR:`` lines.
+- It asks ``check_project`` to instantiate scenes (``--no-instantiate`` opts
+  out). ``load()`` accepts every broken node hierarchy; only
+  ``PackedScene.instantiate()`` rejects a scene whose root carries ``parent=``
+  or whose non-root node has no ``parent=`` (``ERROR: Invalid scene: ...``,
+  a null return, and an entry in ``static.failed`` — all of which fail the run),
+  and only instantiating prints the ``WARNING: Parent path ... has vanished``
+  that a mistyped ``parent=`` produces. Instantiating runs each scene root
+  script's ``_init()`` and its stored-property setters; ``--no-instantiate``
+  is the escape hatch when that is not wanted.
 """
 from __future__ import annotations
 
@@ -44,6 +53,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--no-warnings",
         action="store_true",
         help="Drop warnings from the diagnostics report (errors still fail the run).",
+    )
+    parser.add_argument(
+        "--no-instantiate",
+        dest="instantiate",
+        action="store_false",
+        help=(
+            "Only load scenes, do not instantiate them. Skips the pass that catches an "
+            "invalid node hierarchy (and stops project _init()/setter code from running)."
+        ),
     )
     parser.add_argument(
         "--warnings-as-errors",
@@ -99,7 +117,11 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(f"Missing Godot project file: {project_path / 'project.godot'}")
     dispatcher = (args.dispatcher or Path(__file__).resolve().parents[1] / "core/dispatcher.gd").resolve()
 
-    params = {"project_path": args.project_subpath} if args.project_subpath else {}
+    # Passed explicitly rather than left to the operation's default: this is the
+    # comprehensive pass, and a scene that cannot be instantiated must fail it.
+    params: dict = {"instantiate": args.instantiate}
+    if args.project_subpath:
+        params["project_path"] = args.project_subpath
     command = [args.godot_bin, "--headless"]
     if args.debugger:
         # -d routes GDScript warnings to stdout; --ignore-error-breaks keeps the
