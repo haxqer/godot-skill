@@ -1,0 +1,1414 @@
+{
+  "_comment": "Catalog read by the `help` operation. One entry per dispatcher match arm in dispatcher.gd, shaped {summary, params, example, notes, see} plus an optional action_types for batch operations. `params` is the curated schema a caller should read: only the keys that operation uses, each described with (required) or (default: X) and the value shape, required keys first. `action_types` documents each entry of an `actions` array; a value of \"@<op>\" means \"the params of that operation's entry, minus scene_path and save_path, which the batch owns\". `help '{\"op\":\"X\",\"verbose\":true}'` additionally prints the derived superset of keys the dispatcher accepts. Everything here is checked by `help '{\"check_examples\":true}'`: every params key, every action_types key and every example key is re-derived from the operation's own sources, so a renamed parameter fails that run instead of shipping a dead key. Add an entry in the same commit as the operation.",
+  "add_node": {
+    "summary": "Add one new node of a class under an existing node and save the scene.",
+    "params": {
+      "scene_path": "(required) scene to edit, project-relative or res:// — \"scenes/main.tscn\"",
+      "node_type": "(required) class to instantiate: any instantiable engine class or project class_name — \"Sprite2D\", \"CharacterBody2D\", \"VBoxContainer\"",
+      "node_name": "(required) name of the new node, and its path segment afterwards — \"Player\"",
+      "parent_node_path": "(default: \"root\") path from the scene root, which is always addressed as \"root\" — \"root/Panel\"",
+      "index": "(default: -1 = last) sibling position to insert at; for Control/CanvasItem siblings this is also draw order",
+      "properties": "(default: {}) node properties by name, typed JSON — {\"position\": {\"__type\": \"Vector2\", \"x\": 160, \"y\": 96}, \"text\": \"Start\"}",
+      "indexed_properties": "(default: {}) same, for sub-paths — {\"material:shader_parameter/tint\": \"#ff0000\"}",
+      "groups_add": "(default: []) group names to add the node to — [\"actors\"]",
+      "groups_remove": "(default: []) group names to remove from the node",
+      "metadata": "(default: {}) set_meta entries by name — {\"spawn_id\": 3}"
+    },
+    "example": {
+      "scene_path": "scenes/main.tscn",
+      "parent_node_path": "root",
+      "node_type": "Sprite2D",
+      "node_name": "Player",
+      "properties": {
+        "position": {
+          "__type": "Vector2",
+          "x": 160,
+          "y": 96
+        }
+      }
+    },
+    "notes": [
+      "Node paths start at the scene root, which is always addressed as \"root\" (or \".\"): \"root/Panel/Start\".",
+      "The scene must already exist; use create_scene or scene_batch with create_if_missing to make one.",
+      "More than one edit to the same scene belongs in scene_batch — it loads and saves the scene once and rolls back if any action fails.",
+      "The keys inside properties/indexed_properties/metadata are node property names, not parameters, and are never param-checked."
+    ],
+    "see": "SKILL.md#scene-editing-surface"
+  },
+  "attach_script": {
+    "summary": "Assign an existing .gd script to a node and write its exported properties.",
+    "params": {
+      "scene_path": "(required) scene to edit — \"scenes/main.tscn\"",
+      "script_path": "(required) existing script to attach — \"scripts/main.gd\"",
+      "node_path": "(default: \"root\") node that gets the script — \"root/Player\"",
+      "script_properties": "(default: {}) values for the script's @export properties, typed JSON — {\"speed\": 220.0}",
+      "indexed_script_properties": "(default: {}) same, for sub-paths — {\"config:volume\": 0.5}",
+      "replace_existing": "(default: true) false refuses to overwrite a different script already on the node"
+    },
+    "example": {
+      "scene_path": "scenes/main.tscn",
+      "node_path": "root",
+      "script_path": "scripts/main.gd",
+      "script_properties": {
+        "speed": 220.0
+      }
+    },
+    "notes": [
+      "The script must already exist and parse; a script with a parse error fails to load and the op errors instead of writing a half-wired scene.",
+      "script_properties only reach @export (or otherwise settable) properties declared by that script.",
+      "After adding a script with class_name, run `godot --headless --path <project> --import` before validating, or every other script referencing it fails to parse."
+    ],
+    "see": "SKILL.md#scene-editing-surface"
+  },
+  "audit_imports": {
+    "summary": "Report the import state of every asset: ok, missing, invalid, stale, or orphaned.",
+    "params": {
+      "project_path": "(default: \"res://\") subtree to walk — \"res://art\"",
+      "include_entries": "(default: true) false returns only the counts, without the per-file list"
+    },
+    "example": {
+      "project_path": "res://",
+      "include_entries": true
+    },
+    "notes": [
+      "Read-only. Run `python3 scripts/import/import_project.py <project>` first to actually (re)import, then audit.",
+      "Statuses are ok, missing, invalid, stale, and orphaned."
+    ],
+    "see": "references/automation_api.md#import-and-validation"
+  },
+  "bake_collision": {
+    "summary": "Generate a StaticBody3D + CollisionShape3D under a MeshInstance3D from its mesh.",
+    "params": {
+      "scene_path": "(required) scene to edit — \"props/crate.tscn\"",
+      "node_path": "(default: \"root\") the MeshInstance3D to bake from — \"root/Mesh\"",
+      "mode": "(default: \"trimesh\") \"trimesh\" concave static-only, \"convex\" single hull, or \"multi_convex\" convex decomposition",
+      "clean": "(default: true) convex only: remove duplicate/degenerate points before hulling",
+      "simplify": "(default: false) convex only: simplify the hull",
+      "save_path": "(default: same as scene_path) write the result to a different scene file"
+    },
+    "example": {
+      "scene_path": "props/crate.tscn",
+      "node_path": "root/Mesh",
+      "mode": "trimesh"
+    },
+    "notes": [
+      "node_path must point at a MeshInstance3D that already has a mesh.",
+      "trimesh collision is static only — a RigidBody3D needs convex or multi_convex.",
+      "Reruns replace the body this op generated instead of stacking a duplicate.",
+      "Also available as a scene_batch action."
+    ],
+    "see": "references/automation_api.md#bake_collision"
+  },
+  "bake_csg": {
+    "summary": "Freeze a CSGShape3D tree into a static ArrayMesh, optionally with collision, in place of the CSG nodes.",
+    "params": {
+      "scene_path": "(required) scene to edit — \"proto/level.tscn\"",
+      "node_path": "(default: \"root\") the CSG root node (is_root_shape) — \"root/CSGCombiner3D\"",
+      "out_mesh": "(no default) path to save the baked ArrayMesh — \"meshes/level.res\"",
+      "replace_with_meshinstance": "(default: false) swap the CSG node for a MeshInstance3D holding the baked mesh",
+      "bake_collision": "(default: false) with replace_with_meshinstance, also add a StaticBody3D/CollisionShape3D",
+      "save_path": "(default: same as scene_path) write the rewritten scene elsewhere"
+    },
+    "example": {
+      "scene_path": "proto/level.tscn",
+      "node_path": "root/CSGCombiner3D",
+      "out_mesh": "meshes/level.res",
+      "bake_collision": true,
+      "replace_with_meshinstance": true,
+      "save_path": "proto/level_baked.tscn"
+    },
+    "notes": [
+      "node_path must be the CSG root (is_root_shape) — a child CSG node has no baked geometry of its own.",
+      "Give at least one of out_mesh or replace_with_meshinstance; with neither there is nothing to produce and the op errors instead of reporting a silent success.",
+      "Without replace_with_meshinstance the scene is left untouched and only out_mesh is written.",
+      "CSG geometry updates one frame late, so this op runs inside the live SceneTree and awaits frames before baking."
+    ],
+    "see": "references/automation_api.md#bake_csg"
+  },
+  "build_animation": {
+    "summary": "Build an Animation from declarative value/method/bezier tracks and save it and/or register it on an AnimationPlayer.",
+    "params": {
+      "animation_name": "(required) clip name — \"blink\"",
+      "tracks": "(required) [{\"type\": \"value\"|\"method\"|\"bezier\", \"path\": \"NodePath:property\", \"keys\": [...]}]; value keys are {\"time\", \"value\", \"transition\"}, method keys {\"time\", \"method\", \"args\"}, bezier keys {\"time\", \"value\", \"in_handle\", \"out_handle\"}",
+      "length": "(default: 1.0) clip length in seconds",
+      "loop_mode": "(default: \"none\") \"none\", \"linear\", or \"pingpong\"",
+      "step": "(default: 0.1) editor snap step in seconds",
+      "resource_save_path": "(no default) save the Animation standalone — \"anims/blink.tres\"",
+      "scene_path": "(no default) scene holding the AnimationPlayer to register the clip on",
+      "player_node_path": "(default: \"root/AnimationPlayer\") the AnimationPlayer node, created when missing",
+      "create_player_if_missing": "(default: true) false errors instead of adding the AnimationPlayer",
+      "library": "(default: \"\") AnimationLibrary name; \"\" means the clip plays by bare name",
+      "save_path": "(default: same as scene_path) write the edited scene elsewhere"
+    },
+    "example": {
+      "animation_name": "blink",
+      "length": 0.8,
+      "loop_mode": "linear",
+      "tracks": [
+        {
+          "type": "value",
+          "path": "Sprite2D:modulate",
+          "update_mode": "continuous",
+          "keys": [
+            {
+              "time": 0.0,
+              "value": {
+                "__type": "Color",
+                "r": 1,
+                "g": 1,
+                "b": 1,
+                "a": 1
+              }
+            },
+            {
+              "time": 0.4,
+              "value": {
+                "__type": "Color",
+                "r": 1,
+                "g": 1,
+                "b": 1,
+                "a": 0.2
+              }
+            }
+          ]
+        }
+      ],
+      "resource_save_path": "anims/blink.tres",
+      "scene_path": "scenes/player.tscn",
+      "player_node_path": "root/AnimationPlayer",
+      "library": ""
+    },
+    "notes": [
+      "Track paths are Godot's \"NodePath:property\" form relative to the AnimationPlayer's root_node (its parent by default).",
+      "Value tracks also take update_mode (continuous/discrete/capture) and interpolation (nearest/linear/cubic).",
+      "The default library is \"\", so the clip plays by bare name: player.play(\"blink\").",
+      "Give resource_save_path, or scene_path + player_node_path, or both — with neither the built animation is discarded."
+    ],
+    "see": "references/automation_api.md#build_animation"
+  },
+  "build_animation_tree": {
+    "summary": "Build an AnimationNodeStateMachine on an AnimationTree from clips that already exist on the AnimationPlayer.",
+    "params": {
+      "scene_path": "(required) scene to edit — \"scenes/enemy.tscn\"",
+      "states": "(required) [{\"name\": \"run\", \"animation\": \"run\", \"position\": {\"x\": 0, \"y\": 0}}]; animation defaults to name and must already exist on the AnimationPlayer",
+      "tree_node_path": "(default: \"root/AnimationTree\") the AnimationTree node, created when missing",
+      "anim_player": "(default: \"../AnimationPlayer\") NodePath to the AnimationPlayer, relative to the AnimationTree node",
+      "transitions": "(default: []) [{\"from\", \"to\", \"xfade_time\", \"advance_mode\": \"disabled\"|\"enabled\"|\"auto\", \"advance_condition\", \"advance_expression\", \"switch_mode\": \"immediate\"|\"sync\"|\"at_end\"}]",
+      "auto_start": "(default: true) add a Start -> first state transition when none exists",
+      "active": "(default: true) the AnimationTree's active property",
+      "create_tree_if_missing": "(default: true) false errors instead of adding the AnimationTree node",
+      "save_path": "(default: same as scene_path) write the edited scene elsewhere"
+    },
+    "example": {
+      "scene_path": "scenes/enemy.tscn",
+      "tree_node_path": "root/AnimationTree",
+      "anim_player": "../AnimationPlayer",
+      "states": [
+        {
+          "name": "idle",
+          "animation": "idle"
+        },
+        {
+          "name": "run",
+          "animation": "run"
+        }
+      ],
+      "transitions": [
+        {
+          "from": "idle",
+          "to": "run",
+          "advance_mode": "auto",
+          "advance_condition": "moving",
+          "xfade_time": 0.15
+        },
+        {
+          "from": "run",
+          "to": "idle",
+          "advance_mode": "auto",
+          "advance_expression": "not moving"
+        }
+      ]
+    },
+    "notes": [
+      "Each states[*].animation must already be registered on the linked AnimationPlayer (build_animation puts it there).",
+      "A Start -> first state transition is added unless one exists (auto_start: false disables) — without it the machine never enters a state.",
+      "Drive it at runtime with tree.get(\"parameters/playback\").travel(\"run\"); set conditions with tree.set(\"parameters/conditions/moving\", true).",
+      "For blend trees or blend spaces, assemble tree_root with resource_batch call_method instead."
+    ],
+    "see": "references/automation_api.md#build_animation_tree"
+  },
+  "build_replication_config": {
+    "summary": "Author a SceneReplicationConfig .tres for a MultiplayerSynchronizer.",
+    "params": {
+      "resource_path": "(required) .tres to write — \"net/player_repl.tres\"",
+      "properties": "(required) [{\"path\": \".:position\", \"spawn\": true, \"replication_mode\": \"never\"|\"always\"|\"on_change\"}]; paths are \"NodePath:property\" relative to the synchronizer's root_path",
+      "create_if_missing": "(default: true) false requires the resource to exist already"
+    },
+    "example": {
+      "resource_path": "net/player_repl.tres",
+      "create_if_missing": true,
+      "properties": [
+        {
+          "path": ".:position",
+          "spawn": true,
+          "replication_mode": "on_change"
+        },
+        {
+          "path": ".:velocity",
+          "replication_mode": "always"
+        }
+      ]
+    },
+    "notes": [
+      "Property paths are relative to the synchronizer's root_path (its parent by default).",
+      "Assign the result with configure_node's replication_config property on the MultiplayerSynchronizer."
+    ],
+    "see": "references/automation_api.md#build_replication_config"
+  },
+  "build_sprite_frames": {
+    "summary": "Build SpriteFrames animations on an AnimatedSprite2D from a spritesheet grid or a list of frame files.",
+    "params": {
+      "scene_path": "(required) scene to edit — \"scenes/mob.tscn\"",
+      "node_path": "(default: \"root\") the AnimatedSprite2D — \"root/AnimatedSprite2D\"",
+      "spritesheet": "(atlas mode) the sheet texture to slice — \"art/sheet.png\"",
+      "grid": "(atlas mode) {\"cell_width\", \"cell_height\", \"margin_x\", \"margin_y\", \"separation_x\", \"separation_y\"} in pixels",
+      "animations": "(atlas mode) [{\"name\", \"fps\", \"loop\", \"frames\": [...]}]; a frame is {\"row\",\"col\"} / {\"row\",\"cols\":[..]} / {\"index\"} / {\"region\":{\"x\",\"y\",\"width\",\"height\"}} / {\"path\"}, each with an optional \"duration\"",
+      "animation_name": "(legacy mode) single animation to build — \"idle\"",
+      "frames_dir": "(legacy mode) directory of frame images, sorted by name — \"art/player_idle\"",
+      "frame_paths": "(legacy mode) explicit ordered frame images — [\"art/a.png\", \"art/b.png\"]",
+      "fps": "(legacy mode, default: 10) frames per second for animation_name",
+      "loop": "(legacy mode, default: true) whether animation_name loops",
+      "resource_save_path": "(no default) also save the SpriteFrames standalone — \"anims/mob_frames.tres\""
+    },
+    "example": {
+      "scene_path": "scenes/mob.tscn",
+      "node_path": "root/AnimatedSprite2D",
+      "spritesheet": "art/sheet.png",
+      "grid": {
+        "cell_width": 16,
+        "cell_height": 16
+      },
+      "animations": [
+        {
+          "name": "idle",
+          "fps": 6,
+          "loop": true,
+          "frames": [
+            {
+              "row": 0,
+              "cols": [
+                0,
+                1,
+                2,
+                3
+              ]
+            }
+          ]
+        },
+        {
+          "name": "attack",
+          "fps": 12,
+          "frames": [
+            {
+              "index": 4,
+              "duration": 2.0
+            }
+          ]
+        }
+      ],
+      "resource_save_path": "anims/mob_frames.tres"
+    },
+    "notes": [
+      "Two shapes: spritesheet + grid + animations (multiple clips, per-frame duration), or the legacy animation_name + frames_dir/frame_paths.",
+      "duration is SpriteFrames' relative per-frame duration (default 1.0), not seconds.",
+      "Import the spritesheet first (`godot --headless --path <project> --import`) or the saved resource will not reload later."
+    ],
+    "see": "references/automation_api.md#build_sprite_frames-atlas-mode"
+  },
+  "build_theme": {
+    "summary": "Author a Theme .tres grouped by control type: styleboxes, colors, constants, font sizes, and type variations.",
+    "params": {
+      "resource_path": "(required) .tres to write — \"theme/main.tres\"",
+      "types": "(default: {}) {\"<ControlClass>\": {\"styleboxes\": {...}, \"colors\": {...}, \"constants\": {...}, \"font_sizes\": {...}, \"fonts\": {...}, \"icons\": {...}}} — item names must match the control's documented ones",
+      "variations": "(default: {}) {\"<VariationName>\": {\"base\": \"Label\", ...same item groups}} for theme_type_variation",
+      "default_font": "(no default) {\"__resource\": \"res://fonts/inter.ttf\"}",
+      "default_font_size": "(no default) int, the theme-wide default font size",
+      "default_base_scale": "(no default) float, scales every theme constant (pixel-art UI often uses 1.0)",
+      "create_if_missing": "(default: true) false requires the .tres to exist already"
+    },
+    "example": {
+      "resource_path": "theme/main.tres",
+      "create_if_missing": true,
+      "default_font_size": 16,
+      "types": {
+        "Button": {
+          "styleboxes": {
+            "normal": {
+              "bg_color": "#2a2a2a",
+              "corner_radius": 6,
+              "border_width": 1,
+              "border_color": "#111111",
+              "content_margin": 8
+            },
+            "hover": {
+              "bg_color": "#3a3a3a",
+              "corner_radius": 6
+            },
+            "focus": {
+              "bg_color": "#00000000",
+              "border_width": 2,
+              "border_color": "#88ccff",
+              "corner_radius": 6
+            }
+          },
+          "colors": {
+            "font_color": "#ffffff",
+            "font_hover_color": "#eeeeee"
+          },
+          "constants": {
+            "h_separation": 8
+          },
+          "font_sizes": {
+            "font_size": 16
+          }
+        }
+      },
+      "variations": {
+        "HeaderLabel": {
+          "base": "Label",
+          "colors": {
+            "font_color": "#88ccff"
+          },
+          "font_sizes": {
+            "font_size": 28
+          }
+        }
+      }
+    },
+    "notes": [
+      "Item names are not validated by the engine — a typo silently falls back to the default theme, so match the control's documented item names.",
+      "Author every interactive state (normal/hover/pressed/focus/disabled), not just normal; a missing focus stylebox makes keyboard/gamepad navigation invisible.",
+      "Styleboxes accept the flat shorthand above, an inline {\"__resource_type\":\"StyleBox...\"}, a {\"__resource\":\"res://...\"} reference, or the string \"empty\".",
+      "Wire the finished theme project-wide with project_batch set_setting on gui/theme/custom."
+    ],
+    "see": "references/automation_api.md#build_theme"
+  },
+  "build_tileset": {
+    "summary": "Author a TileSet .tres: atlas sources, exposed tiles, physics/custom-data layers, terrains.",
+    "params": {
+      "resource_path": "(required) .tres to write — \"tilesets/world.tres\"",
+      "sources": "(required) [{\"source_id\": 0, \"texture\": \"art/tiles.png\", \"tiles\": \"all\" | [{\"atlas_coords\":{\"x\",\"y\"}, \"size\":{\"x\",\"y\"}}], \"tile_defaults\": {...}, \"texture_region_size\", \"margins\", \"separation\"}]",
+      "tile_size": "(default: {\"x\": 16, \"y\": 16}) grid cell size in pixels",
+      "physics_layers": "(default: []) [{\"collision_layer\": 1, \"collision_mask\": 1}]; required before any tile collision",
+      "custom_data_layers": "(default: []) [{\"name\": \"kind\", \"type\": \"bool\"|\"int\"|\"float\"|\"string\"|\"vector2\"|\"vector2i\"|\"color\"}]",
+      "terrain_sets": "(default: []) [{\"mode\": \"match_corners_and_sides\"|\"match_corners\"|\"match_sides\", \"terrains\": [{\"name\", \"color\"}]}]",
+      "create_if_missing": "(default: true) false requires the .tres to exist already"
+    },
+    "example": {
+      "resource_path": "tilesets/world.tres",
+      "create_if_missing": true,
+      "tile_size": {
+        "x": 16,
+        "y": 16
+      },
+      "physics_layers": [
+        {
+          "collision_layer": 1,
+          "collision_mask": 1
+        }
+      ],
+      "custom_data_layers": [
+        {
+          "name": "kind",
+          "type": "string"
+        }
+      ],
+      "sources": [
+        {
+          "source_id": 0,
+          "texture": "art/tiles.png",
+          "tiles": "all",
+          "tile_defaults": {
+            "collision": "full_cell",
+            "collision_layer_index": 0
+          }
+        }
+      ]
+    },
+    "notes": [
+      "Per-tile keys (on a tile entry or on sources[*].tile_defaults): collision (\"full_cell\" or 3+ {x,y} points), collision_layer_index, custom_data, terrain_set, terrain, peering.",
+      "Without collision polygons a TileSet is decorative and characters fall through — \"collision\": \"full_cell\" needs at least one physics_layers entry.",
+      "Run the importer first when the texture is a fresh unimported image, or the saved .tres will not reload in a later session.",
+      "paint_tilemap then assigns this TileSet to a TileMapLayer and paints cells."
+    ],
+    "see": "references/automation_api.md#build_tileset"
+  },
+  "check_project": {
+    "summary": "Load (and instantiate) every script, scene, shader, resource, GDExtension, and plugin, and report failures.",
+    "params": {
+      "project_path": "(default: \"res://\") subtree to walk — \"res://scenes\"",
+      "instantiate": "(default: true) also PackedScene.instantiate() every scene; false is a load-only pass that runs no project code"
+    },
+    "example": {
+      "project_path": "res://",
+      "instantiate": true
+    },
+    "notes": [
+      "Run it with `--debug --ignore-error-breaks` on the godot command line, or no GDScript warnings are printed at all.",
+      "Pipe the combined output through scripts/debug/godot_log_parser.py for line-level diagnostics, or just use scripts/debug/validate_project.py which does both.",
+      "failed_count 0 is not a pass on its own: Godot degrades gracefully where the editor is fatal, so read the parsed diagnostics too.",
+      "instantiate is what catches broken node hierarchies; it runs each scene root's _init() and stored-property setters, so set it false only when that has side effects."
+    ],
+    "see": "references/automation_api.md#check_project-and-the-instantiate-pass"
+  },
+  "collision_from_sprite": {
+    "summary": "Trace a sprite's alpha silhouette into CollisionPolygon2D children, one per opaque island.",
+    "params": {
+      "scene_path": "(required) scene to edit — \"actors/enemy.tscn\"",
+      "node_path": "(default: \"root\") the Sprite2D to trace — \"root/Sprite2D\"",
+      "texture": "(default: the node's own texture) image to trace — \"art/enemy.png\"",
+      "alpha_threshold": "(default: 0.1) alpha above which a pixel counts as solid, 0.0-1.0",
+      "epsilon": "(default: 2.0) outline simplification in pixels; lower means more vertices and more physics cost",
+      "one_way": "(default: false) mark the generated colliders one-way (platform tops)",
+      "centered": "(default: the sprite's own centered) offset points by half the texture size",
+      "offset": "(no default) extra {\"x\", \"y\"} nudge applied to every point",
+      "collision_name": "(default: \"CollisionPolygon2D\") base name for the generated children",
+      "save_path": "(default: same as scene_path) write the edited scene elsewhere"
+    },
+    "example": {
+      "scene_path": "actors/enemy.tscn",
+      "node_path": "root/Sprite2D",
+      "texture": "art/enemy.png",
+      "alpha_threshold": 0.1,
+      "epsilon": 2.0,
+      "one_way": false
+    },
+    "notes": [
+      "texture defaults to the target Sprite2D's own texture; pass it explicitly when the node has none yet.",
+      "The colliders are added under the sprite; give them a parent body (CharacterBody2D/StaticBody2D) for them to collide.",
+      "Reruns replace the colliders this op generated instead of stacking duplicates."
+    ],
+    "see": "references/automation_api.md#collision_from_sprite"
+  },
+  "configure_control": {
+    "summary": "Set a Control's layout preset, anchors, offsets, size flags, minimum size, and theme overrides.",
+    "params": {
+      "scene_path": "(required) scene to edit — \"scenes/menu.tscn\"",
+      "node_path": "(default: \"root\") the Control to configure — \"root/Panel/StartButton\"",
+      "layout_preset": "(no default) LayoutPreset name applied to anchors and offsets together — \"FULL_RECT\", \"CENTER\", \"TOP_WIDE\", \"BOTTOM_WIDE\"",
+      "layout_preset_mode": "(default: \"MODE_MINSIZE\") resize mode for layout_preset — \"MODE_MINSIZE\", \"MODE_KEEP_WIDTH\", \"MODE_KEEP_HEIGHT\", \"MODE_KEEP_SIZE\"",
+      "anchors_preset": "(no default) same preset names, anchors only",
+      "offsets_preset": "(no default) same preset names, offsets only",
+      "offsets_preset_mode": "(default: \"MODE_MINSIZE\") resize mode for offsets_preset",
+      "anchor_overrides": "(no default) {\"left\", \"top\", \"right\", \"bottom\"} anchor ratios 0.0-1.0",
+      "offset_overrides": "(no default) {\"left\", \"top\", \"right\", \"bottom\"} offsets in pixels",
+      "position": "(no default) {\"__type\": \"Vector2\", \"x\", \"y\"} — only meaningful outside a Container",
+      "size": "(no default) {\"__type\": \"Vector2\", \"x\", \"y\"} — a Container overrides it",
+      "custom_minimum_size": "(no default) {\"__type\": \"Vector2\", \"x\", \"y\"}; the reliable way to size a control inside a Container",
+      "size_flags_horizontal": "(no default) \"FILL\", \"EXPAND\", \"EXPAND_FILL\", \"SHRINK_BEGIN\", \"SHRINK_CENTER\", \"SHRINK_END\"",
+      "size_flags_vertical": "(no default) same values, vertical axis",
+      "stretch_ratio": "(no default) float share of the leftover space among EXPAND siblings",
+      "theme_overrides": "(default: {}) per-control theme items keyed \"<group>/<item>\" — {\"colors/font_color\": \"#fff\", \"constants/margin_left\": 12, \"styleboxes/normal\": {...}, \"font_sizes/font_size\": 20}"
+    },
+    "example": {
+      "scene_path": "scenes/menu.tscn",
+      "node_path": "root/Panel/StartButton",
+      "layout_preset": "FULL_RECT",
+      "custom_minimum_size": {
+        "__type": "Vector2",
+        "x": 240,
+        "y": 64
+      },
+      "size_flags_horizontal": "EXPAND_FILL",
+      "theme_overrides": {
+        "font_sizes/font_size": 20
+      }
+    },
+    "notes": [
+      "Build the layout out of containers first. A bare Control does not place its children, so absolutely positioned siblings all resolve to (0, 0) and stack — the single most common broken-UI cause.",
+      "Inside a Container, position/size are overwritten by the parent every layout pass; use custom_minimum_size and the size flags instead.",
+      "Verify the result with a run_scenario ui_report step and fail_on, not by eye."
+    ],
+    "see": "references/game_ui.md"
+  },
+  "configure_node": {
+    "summary": "Set properties, indexed properties, groups, metadata, and unique_name_in_owner on an existing node.",
+    "params": {
+      "scene_path": "(required) scene to edit — \"scenes/main.tscn\"",
+      "node_path": "(default: \"root\") node to configure — \"root/Player\"",
+      "properties": "(default: {}) node properties by name, typed JSON — {\"texture\": {\"__resource\": \"res://art/player.png\"}, \"z_index\": 1}",
+      "indexed_properties": "(default: {}) sub-path properties — {\"material:shader_parameter/tint\": \"#ff0000\"}",
+      "groups_add": "(default: []) group names to add — [\"actors\"]",
+      "groups_remove": "(default: []) group names to remove",
+      "metadata": "(default: {}) set_meta entries by name — {\"spawn_id\": 3}",
+      "unique_name_in_owner": "(no default) true makes the node reachable as %Name in scripts"
+    },
+    "example": {
+      "scene_path": "scenes/main.tscn",
+      "node_path": "root/Player",
+      "properties": {
+        "texture": {
+          "__resource": "res://art/player.png"
+        },
+        "z_index": 1
+      },
+      "groups_add": [
+        "actors"
+      ],
+      "metadata": {
+        "spawn_id": 3
+      },
+      "unique_name_in_owner": true
+    },
+    "notes": [
+      "This is the general property setter — prefer it over load_sprite for assigning a texture.",
+      "The keys inside properties/indexed_properties/metadata are project data and are never param-checked; a typo there fails at assignment time instead.",
+      "Use configure_control for Control layout: anchors, presets, size flags, and theme overrides."
+    ],
+    "see": "SKILL.md#scene-editing-surface"
+  },
+  "connect_signal": {
+    "summary": "Connect a node's signal to a method on a target node, persisted in the scene file.",
+    "params": {
+      "scene_path": "(required) scene to edit — \"scenes/menu.tscn\"",
+      "node_path": "(required) node that emits the signal — \"root/StartButton\"",
+      "signal_name": "(required) signal on that node — \"pressed\"",
+      "target_node_path": "(required) node holding the handler — \"root\"",
+      "method_name": "(required) method on the target, declared by its script — \"_on_start_pressed\"",
+      "binds": "(default: []) extra arguments appended to the signal's own — [\"clicked\"]",
+      "persist": "(default: true) store the connection in the .tscn (CONNECT_PERSIST)",
+      "deferred": "(default: false) CONNECT_DEFERRED: call at idle time instead of immediately",
+      "one_shot": "(default: false) CONNECT_ONE_SHOT: disconnect after the first emit",
+      "reference_counted": "(default: false) CONNECT_REFERENCE_COUNTED",
+      "replace_existing": "(default: true) false errors when the same connection already exists"
+    },
+    "example": {
+      "scene_path": "scenes/menu.tscn",
+      "node_path": "root/StartButton",
+      "signal_name": "pressed",
+      "target_node_path": "root",
+      "method_name": "_on_start_pressed",
+      "binds": [
+        "clicked"
+      ]
+    },
+    "notes": [
+      "The target node needs a script that declares method_name, or the connection loads but fails at emit time.",
+      "inspect_scene lists the connections a scene already holds.",
+      "disconnect_signal removes it again by the same four fields."
+    ],
+    "see": "SKILL.md#scene-editing-surface"
+  },
+  "create_scene": {
+    "summary": "Create and save a new scene with a typed root node.",
+    "params": {
+      "scene_path": "(required) .tscn to create — \"scenes/level.tscn\"",
+      "root_node_type": "(default: \"Node2D\") class of the root node — \"Control\", \"Node3D\", \"CharacterBody2D\"",
+      "root_node_name": "(default: \"root\") name of the root node; later operations still address it as \"root\"",
+      "properties": "(default: {}) root node properties, typed JSON",
+      "indexed_properties": "(default: {}) root node sub-path properties"
+    },
+    "example": {
+      "scene_path": "scenes/level.tscn",
+      "root_node_type": "Node2D",
+      "root_node_name": "Level",
+      "properties": {
+        "position": {
+          "__type": "Vector2",
+          "x": 0,
+          "y": 0
+        }
+      }
+    },
+    "notes": [
+      "Use scene_batch with create_if_missing for an idempotent create-or-open plus the first few nodes in one call.",
+      "root_node_type is any instantiable class name (Node2D, Control, Node3D, CharacterBody2D, ...).",
+      "The root is addressed as \"root\" by every later operation regardless of root_node_name."
+    ],
+    "see": "SKILL.md#scene-editing-surface"
+  },
+  "disconnect_signal": {
+    "summary": "Remove a persistent scene connection by source node, signal, target node, and method.",
+    "params": {
+      "scene_path": "(required) scene to edit — \"scenes/menu.tscn\"",
+      "node_path": "(required) node that emits the signal — \"root/StartButton\"",
+      "signal_name": "(required) signal name — \"pressed\"",
+      "target_node_path": "(required) node holding the handler — \"root\"",
+      "method_name": "(required) handler method name — \"_on_start_pressed\""
+    },
+    "example": {
+      "scene_path": "scenes/menu.tscn",
+      "node_path": "root/StartButton",
+      "signal_name": "pressed",
+      "target_node_path": "root",
+      "method_name": "_on_start_pressed"
+    },
+    "notes": [
+      "All four fields must match the stored connection exactly; inspect_scene lists the connections a scene actually holds.",
+      "Only connections stored in the scene are removed — connections made at runtime with .connect() live in code."
+    ],
+    "see": "SKILL.md#scene-editing-surface"
+  },
+  "export_mesh_library": {
+    "summary": "Build a .meshlib MeshLibrary from a 3D scene's mesh children, for GridMap.",
+    "params": {
+      "scene_path": "(required) source 3D scene — \"scenes/kit.tscn\"",
+      "output_path": "(required) .meshlib to write — \"meshlib/tiles.meshlib\"",
+      "mesh_item_names": "(default: [] = every mesh child) restrict the export to these child names — [\"Floor\", \"Wall\"]"
+    },
+    "example": {
+      "scene_path": "scenes/kit.tscn",
+      "output_path": "meshlib/tiles.meshlib",
+      "mesh_item_names": [
+        "Floor",
+        "Wall"
+      ]
+    },
+    "notes": [
+      "scene_path and output_path are both required; the op errors instead of exiting 0 when either is missing.",
+      "Feed the result to paint_gridmap as mesh_library; the item ids are the MeshLibrary indices."
+    ],
+    "see": "SKILL.md#use-the-specialized-operations"
+  },
+  "get_uid": {
+    "summary": "Report a file's .uid sidecar path, whether it exists, and any engine-reported UID.",
+    "params": {
+      "file_path": "(required) file to inspect — \"scenes/main.tscn\""
+    },
+    "example": {
+      "file_path": "scenes/main.tscn"
+    },
+    "notes": [
+      "Read-only diagnostic for projects that cross-reference resources by UID.",
+      "Headless-saved .tres/.tscn files carry no uid= header; run resave_resources to try to regenerate the sidecars, then re-check."
+    ],
+    "see": "SKILL.md#scene-editing-surface"
+  },
+  "gltf_export": {
+    "summary": "Export a scene or a subtree to .glb/.gltf through GLTFDocument.",
+    "params": {
+      "scene_path": "(required) scene to export — \"scenes/level.tscn\"",
+      "out": "(required) output file; the extension picks the format (.glb binary, .gltf text). res://, user://, absolute, or project-relative",
+      "node_path": "(default: \"root\") export just this subtree — \"root/Props\"",
+      "flags": "(default: 0) GLTFDocument export flags bitmask"
+    },
+    "example": {
+      "scene_path": "scenes/level.tscn",
+      "node_path": "root",
+      "out": "export/level.glb"
+    },
+    "notes": [
+      "The extension of out selects the format: .glb binary, .gltf text.",
+      "Import stays with the standard --import pipeline."
+    ],
+    "see": "references/automation_api.md#gltf_export"
+  },
+  "help": {
+    "summary": "List every dispatcher operation, or print one operation's parameters, example, and runnable command.",
+    "params": {
+      "op": "(no default; omit to list every operation) operation to describe — \"add_node\"",
+      "format": "(default: \"json\") \"text\" renders the same information as plain lines",
+      "verbose": "(default: false) with op, also print accepted_keys: the full derived key set the dispatcher will accept",
+      "check_examples": "(default: false) validate every catalog params/example key against the keys its operation really reads; exits 1 on any failure"
+    },
+    "example": {
+      "op": "add_node"
+    },
+    "notes": [
+      "help '{}' lists every operation with a one-line summary; help '{\"op\":\"<name>\"}' prints that one in full, including a command you can paste.",
+      "params is the curated schema: only the keys that operation uses, required first. verbose adds the derived superset the param check accepts.",
+      "The operation list is read out of dispatcher.gd's match arms and the accepted keys out of each op's source, so help can never describe an operation the dispatcher cannot run."
+    ],
+    "see": "references/automation_api.md#discover-operations-help"
+  },
+  "inspect_image": {
+    "summary": "Describe an image as text: size, blankness, opaque ratio, content bbox, dominant colors, optional ASCII art.",
+    "params": {
+      "image_path": "(required, or image_paths) image to describe — \"art/player.png\"",
+      "image_paths": "(alternative to image_path) describe several images in one call — [\"art/a.png\", \"art/b.png\"]",
+      "ascii": "(default: false) add an ASCII rendering by luminance, aspect-corrected",
+      "ascii_width": "(default: 64) column count of the ASCII rendering",
+      "ascii_color": "(default: false) add the nearest-colour grid (K W R G B Y C M per cell)",
+      "compare_to": "(no default) second image to diff against; adds diff_ratio — \"tests/reference/player.png\"",
+      "max_unique": "(default: 4096) cap on the exact unique-colour count",
+      "background_tolerance": "(default: 0.12 for .jpg/.jpeg, else 0) per-channel colour distance, 0-1, under which a pixel still counts as background for content_bbox and quadrants; raise it for lossy WebP or noisy captures, 0 forces an exact match",
+      "expect": "(no default) machine checks that fail the run, e.g. {\"not_blank\": true, \"min_opaque_ratio\": 0.1}",
+      "format": "(default: \"json\") \"text\" prints the summary and any ASCII rows as plain lines"
+    },
+    "example": {
+      "image_path": "art/player.png",
+      "ascii": true,
+      "ascii_width": 64
+    },
+    "notes": [
+      "Written for models that cannot see images: blank/opaque_ratio/content_bbox answer \"did anything actually render\" without looking at a screenshot.",
+      "ASCII rows are aspect-corrected because characters are about twice as tall as they are wide.",
+      "compare_to turns a visual regression into a number (diff_ratio) instead of a look."
+    ],
+    "see": "references/automation_api.md#inspect_image"
+  },
+  "inspect_project": {
+    "summary": "Report engine/host capabilities, selected settings, InputMap actions, autoloads, global classes, plugins, and export presets.",
+    "params": {
+      "include_files": "(default: false) also list every project file path; counts are always returned"
+    },
+    "example": {
+      "include_files": false
+    },
+    "notes": [
+      "Start here on an unfamiliar project; include_files is usually noise.",
+      "Read-only. Autoload and InputMap names reported here are the ones project_batch edits."
+    ],
+    "see": "references/automation_api.md#inspection-operations"
+  },
+  "inspect_resource": {
+    "summary": "Read a .tres/.res resource's stored values, dependencies, UID, and (for scripts) method/signal metadata.",
+    "params": {
+      "resource_path": "(required) resource to read — \"theme/main.tres\"",
+      "include_schema": "(default: false) add property type/usage metadata — enable only when you need to know what a property accepts",
+      "include_non_storage": "(default: false) add properties the engine does not serialize",
+      "max_resource_depth": "(default: 2) how deep nested sub-resources are expanded"
+    },
+    "example": {
+      "resource_path": "theme/main.tres",
+      "include_schema": false,
+      "max_resource_depth": 2
+    },
+    "notes": [
+      "This is how to verify a resource_batch / build_theme / build_tileset write actually landed.",
+      "For a Script resource it also reports the methods, signals, and exported properties, which is how to check a method_name before connect_signal."
+    ],
+    "see": "references/automation_api.md#inspection-operations"
+  },
+  "inspect_scene": {
+    "summary": "Read a scene's nodes, stored properties, connections, dependencies, and UID without instantiating it.",
+    "params": {
+      "scene_path": "(required) scene to read — \"scenes/main.tscn\"",
+      "include_properties": "(default: true) include each node's stored property values",
+      "max_resource_depth": "(default: 2) how deep nested sub-resources are expanded"
+    },
+    "example": {
+      "scene_path": "scenes/main.tscn",
+      "include_properties": true,
+      "max_resource_depth": 2
+    },
+    "notes": [
+      "Reads SceneState, so it runs no project code and never triggers a script's _init().",
+      "This is the only check that reveals a silently flattened hierarchy (every node parented to the root) — check_project and a clean boot both pass on one.",
+      "Reported node paths paste straight into a later node_path."
+    ],
+    "see": "references/automation_api.md#inspection-operations"
+  },
+  "inspect_tilemap": {
+    "summary": "Dump a TileMapLayer or GridMap's painted cells as an ASCII map with a legend, bounds, and per-tile counts.",
+    "params": {
+      "scene_path": "(required) scene to read — \"scenes/level.tscn\"",
+      "node_path": "(required) the TileMapLayer or GridMap — \"root/Ground\"",
+      "legend": "(no default) force specific symbols, {\"symbol\": tile spec}; otherwise symbols are assigned automatically",
+      "bounds": "(no default) restrict the dump to a rect, {\"x\", \"y\", \"width\", \"height\"} in cells",
+      "format": "(default: \"json\") \"text\" prints the rows only, which is the readable form for a level layout"
+    },
+    "example": {
+      "scene_path": "scenes/level.tscn",
+      "node_path": "root/Ground"
+    },
+    "notes": [
+      "Works on both TileMapLayer and GridMap; it is how to verify a paint_tilemap/paint_gridmap run without a screenshot.",
+      "The legend maps each ASCII character back to its source_id/atlas_coords (or mesh library item).",
+      "The rows it prints are the same shape paint_tilemap's ascii_map accepts, so a dump can be edited and painted back."
+    ],
+    "see": "references/automation_api.md#inspect_tilemap"
+  },
+  "instantiate_scene": {
+    "summary": "Add an instance of another scene as a child node, optionally renamed and configured.",
+    "params": {
+      "scene_path": "(required) scene to edit — \"scenes/level.tscn\"",
+      "instance_scene_path": "(required) scene to instance — \"actors/enemy.tscn\"",
+      "parent_node_path": "(default: \"root\") where to add the instance — \"root/Enemies\"",
+      "node_name": "(default: the instanced scene's root name) rename the instance — \"Enemy1\"",
+      "index": "(default: -1 = last) sibling position to insert at",
+      "unique_name_in_owner": "(no default) true makes the instance reachable as %Name",
+      "properties": "(default: {}) overrides applied to the instance's root node, typed JSON",
+      "indexed_properties": "(default: {}) same, for sub-paths"
+    },
+    "example": {
+      "scene_path": "scenes/level.tscn",
+      "parent_node_path": "root",
+      "instance_scene_path": "actors/enemy.tscn",
+      "node_name": "Enemy1",
+      "properties": {
+        "position": {
+          "__type": "Vector2",
+          "x": 320,
+          "y": 180
+        }
+      }
+    },
+    "notes": [
+      "properties are stored as scene-instance overrides, so later edits to the instanced scene still flow through.",
+      "Reuse this instead of rebuilding the same subtree in every level scene."
+    ],
+    "see": "SKILL.md#scene-editing-surface"
+  },
+  "load_sprite": {
+    "summary": "Load a texture resource into a Sprite2D, Sprite3D, or TextureRect (compatibility op).",
+    "params": {
+      "scene_path": "(required) scene to edit — \"scenes/main.tscn\"",
+      "texture_path": "(required) texture resource to assign — \"art/player.png\"",
+      "node_path": "(default: \"root\") the sprite-like node — \"root/Player\""
+    },
+    "example": {
+      "scene_path": "scenes/main.tscn",
+      "node_path": "root/Player",
+      "texture_path": "art/player.png"
+    },
+    "notes": [
+      "Kept for compatibility — configure_node with {\"properties\": {\"texture\": {\"__resource\": \"res://art/player.png\"}}} is the general form and works on any node with a texture property.",
+      "The texture must be imported already; a fresh PNG needs `godot --headless --path <project> --import` first."
+    ],
+    "see": "SKILL.md#scene-editing-surface"
+  },
+  "paint_gridmap": {
+    "summary": "Assign a MeshLibrary and paint, fill, or erase cells on a GridMap node.",
+    "params": {
+      "scene_path": "(required) scene to edit — \"scenes/level.tscn\"",
+      "node_path": "(default: \"root\") the GridMap node — \"root/GridMap\"",
+      "mesh_library": "(no default) .meshlib to assign first — \"meshlib/tiles.meshlib\"",
+      "cell_size": "(no default) {\"__type\": \"Vector3\", \"x\", \"y\", \"z\"} cell size in world units",
+      "clear": "(default: false) erase every cell before painting",
+      "fills": "(default: []) [{\"from\": [0,0,0], \"to\": [7,0,7], \"item\": 0, \"orient\": 0}] inclusive boxes",
+      "cells": "(default: []) [{\"pos\": [3,1,4], \"item\": 2, \"orient\": 22}]; pos accepts [x,y,z] or {x,y,z}",
+      "erase": "(default: []) cells to clear — [[0,0,0]]",
+      "ascii_layers": "(no default) [{\"y\": 0, \"rows\": [\"###\", \"#.#\"]}] painted through legend, one entry per height level",
+      "legend": "(default: {}) symbol -> item spec for ascii_layers — {\"#\": {\"item\": 0}, \".\": null}",
+      "erase_unlisted": "(default: false) with ascii_layers, clear cells whose symbol is not in the legend",
+      "save_path": "(default: same as scene_path) write the edited scene elsewhere"
+    },
+    "example": {
+      "scene_path": "scenes/level.tscn",
+      "node_path": "root/GridMap",
+      "mesh_library": "meshlib/tiles.meshlib",
+      "cell_size": {
+        "__type": "Vector3",
+        "x": 2,
+        "y": 2,
+        "z": 2
+      },
+      "clear": false,
+      "fills": [
+        {
+          "from": [
+            0,
+            0,
+            0
+          ],
+          "to": [
+            7,
+            0,
+            7
+          ],
+          "item": 0,
+          "orient": 0
+        }
+      ],
+      "cells": [
+        {
+          "pos": [
+            3,
+            1,
+            4
+          ],
+          "item": 2,
+          "orient": 22
+        }
+      ],
+      "erase": [
+        [
+          0,
+          0,
+          0
+        ]
+      ]
+    },
+    "notes": [
+      "item must exist in the mesh library (build it with export_mesh_library) — an unknown id is rejected, not silently skipped.",
+      "orient is a 0-23 orthogonal basis index; 0 is unrotated.",
+      "Order per call: mesh_library -> cell_size -> clear -> erase -> cells -> fills -> ascii_layers. Also runs as a scene_batch action.",
+      "ascii_layers + legend is the readable form: [{\"y\": 0, \"rows\": [\"AAAA\", \"A..A\"]}] with {\"A\": {\"item\": 0, \"orientation\": 0}, \".\": null}; rows map to z, characters to x, one entry per y slab.",
+      "Verify the result as text with inspect_tilemap, which reads GridMaps too."
+    ],
+    "see": "references/automation_api.md#paint_gridmap"
+  },
+  "paint_tilemap": {
+    "summary": "Assign a TileSet and paint, fill, erase, or terrain-fill cells on a TileMapLayer node.",
+    "params": {
+      "scene_path": "(required) scene to edit — \"scenes/level.tscn\"",
+      "node_path": "(default: \"root\") the TileMapLayer node — \"root/Ground\"",
+      "tile_set": "(no default) TileSet .tres to assign first — \"tilesets/world.tres\"",
+      "clear": "(default: false) erase every cell before painting",
+      "cells": "(default: []) [{\"coords\": {\"x\", \"y\"}, \"source_id\": 0, \"atlas_coords\": {\"x\", \"y\"}, \"alternative\": 0}]",
+      "fills": "(default: []) [{\"from\": {\"x\",\"y\"}, \"to\": {\"x\",\"y\"}, \"source_id\": 0, \"atlas_coords\": {\"x\",\"y\"}}] inclusive rectangles",
+      "erase": "(default: []) cells to clear — [{\"x\": 5, \"y\": 5}]",
+      "ascii_map": "(no default) {\"legend\": {\"#\": {\"source_id\": 0, \"atlas_coords\": {\"x\": 0, \"y\": 0}}, \".\": null}, \"rows\": [\"###\", \"#.#\"], \"origin\": {\"x\": 0, \"y\": 0}, \"erase_unlisted\": false} — paint a level as text",
+      "terrain_fills": "(default: []) [{\"cells\": [{\"x\",\"y\"}], \"terrain_set\": 0, \"terrain\": 0, \"ignore_empty_terrains\": true}] autotiling via set_cells_terrain_connect",
+      "save_path": "(default: same as scene_path) write the edited scene elsewhere"
+    },
+    "example": {
+      "scene_path": "scenes/level.tscn",
+      "node_path": "root/Ground",
+      "tile_set": "tilesets/world.tres",
+      "clear": false,
+      "cells": [
+        {
+          "coords": {
+            "x": 0,
+            "y": 0
+          },
+          "source_id": 0,
+          "atlas_coords": {
+            "x": 0,
+            "y": 0
+          }
+        }
+      ],
+      "fills": [
+        {
+          "from": {
+            "x": 0,
+            "y": 1
+          },
+          "to": {
+            "x": 9,
+            "y": 1
+          },
+          "source_id": 0,
+          "atlas_coords": {
+            "x": 1,
+            "y": 0
+          }
+        }
+      ],
+      "erase": [
+        {
+          "x": 5,
+          "y": 5
+        }
+      ]
+    },
+    "notes": [
+      "TileMap (the monolithic node) is deprecated since 4.3 — add TileMapLayer nodes instead.",
+      "Painting fails fast when the atlas source has not exposed the requested atlas_coords; expose tiles with build_tileset first.",
+      "Order per call: tile_set -> clear -> erase -> cells -> fills -> ascii_map -> terrain_fills.",
+      "ascii_map is the readable way to author a level: {\"legend\": {\"#\": {\"source_id\": 0, \"atlas_coords\": {\"x\": 0, \"y\": 0}}, \".\": null}, \"rows\": [\"#####\", \"#...#\"], \"origin\": {\"x\": 0, \"y\": 0}}. Rows are top-to-bottom (y), characters left-to-right (x); an unknown character aborts the paint and leaves the scene untouched; \".\" and \" \" leave cells alone unless ascii_map.erase_unlisted is true. inspect_tilemap dumps the same shape back out.",
+      "terrain_fills needs terrain membership plus peering bits on the TileSet."
+    ],
+    "see": "references/automation_api.md#paint_tilemap"
+  },
+  "project_batch": {
+    "summary": "Transactional project.godot edits: settings, InputMap actions/events, autoloads, layer names, main scene, translations, shader globals.",
+    "params": {
+      "actions": "(required) ordered array; every entry is {\"type\": <one of action_types>} plus that type's keys",
+      "backup_path": "(no default) snapshot project.godot here before saving — \"project.godot.bak\""
+    },
+    "action_types": {
+      "set_setting": {
+        "name": "(required) full setting path — \"display/window/size/viewport_width\"",
+        "value": "(required) typed JSON value"
+      },
+      "clear_setting": {
+        "name": "(required) setting path to remove"
+      },
+      "add_input_action": {
+        "action_name": "(required) InputMap action — \"jump\"",
+        "deadzone": "(default: 0.5) analog deadzone 0.0-1.0",
+        "replace": "(default: false) true clears the action's existing events first"
+      },
+      "remove_input_action": {
+        "action_name": "(required) action to remove"
+      },
+      "add_input_event": {
+        "action_name": "(required) existing action to add the event to",
+        "event": "(required) typed Resource — {\"__resource_type\": \"InputEventKey\", \"properties\": {\"physical_keycode\": 32}}"
+      },
+      "remove_input_event": {
+        "action_name": "(required) existing action",
+        "event_index": "(required) zero-based index of the event to remove"
+      },
+      "add_autoload": {
+        "autoload_name": "(required) global name — \"GameState\"",
+        "path": "(required) script or scene — \"autoload/game_state.gd\"",
+        "singleton": "(default: true) register as a singleton"
+      },
+      "remove_autoload": {
+        "autoload_name": "(required) autoload to remove"
+      },
+      "set_layer_name": {
+        "layer_type": "(required) \"2d_physics\", \"3d_physics\", \"2d_render\", \"3d_render\", \"2d_navigation\", \"3d_navigation\"",
+        "layer": "(required) layer number 1-32",
+        "layer_name": "(required) display name — \"enemies\""
+      },
+      "set_main_scene": {
+        "scene_path": "(required) existing scene — \"scenes/main.tscn\""
+      },
+      "add_translation": {
+        "path": "(required) .translation/.po file — \"i18n/game.en.translation\""
+      },
+      "remove_translation": {
+        "path": "(required) translation file to unregister"
+      },
+      "set_shader_global": {
+        "name": "(required) global uniform name — \"wind_dir\"",
+        "global_type": "(required) shader-globals type — \"color\", \"vec3\", \"float\", \"sampler2D\"",
+        "value": "(required) typed JSON value"
+      },
+      "clear_shader_global": {
+        "name": "(required) global uniform to remove (idempotent)"
+      }
+    },
+    "example": {
+      "backup_path": "project.godot.bak",
+      "actions": [
+        {
+          "type": "set_setting",
+          "name": "display/window/size/viewport_width",
+          "value": 640
+        },
+        {
+          "type": "add_input_action",
+          "action_name": "jump",
+          "deadzone": 0.2,
+          "replace": true
+        },
+        {
+          "type": "add_input_event",
+          "action_name": "jump",
+          "event": {
+            "__resource_type": "InputEventKey",
+            "properties": {
+              "physical_keycode": 32
+            }
+          }
+        },
+        {
+          "type": "add_autoload",
+          "autoload_name": "GameState",
+          "path": "autoload/game_state.gd",
+          "singleton": true
+        }
+      ]
+    },
+    "notes": [
+      "Every action is applied in memory and ProjectSettings.save() is called once at the end.",
+      "save() rewrites project.godot wholesale: comments are dropped and keys re-sorted. Rely on version control, or pass backup_path to snapshot it first.",
+      "Values equal to the engine default are omitted from project.godot by design — read them back with inspect_project, not by grepping the file.",
+      "Order matters: add_input_action before add_input_event for the same action."
+    ],
+    "see": "references/automation_api.md#project-settings-transactions"
+  },
+  "remove_node": {
+    "summary": "Delete a node and its subtree from a scene.",
+    "params": {
+      "scene_path": "(required) scene to edit — \"scenes/main.tscn\"",
+      "node_path": "(required) node to delete; its whole subtree goes with it — \"root/Placeholder\""
+    },
+    "example": {
+      "scene_path": "scenes/main.tscn",
+      "node_path": "root/Placeholder"
+    },
+    "notes": [
+      "Connections stored in the scene that referenced the removed node go away with it; connections from other scenes do not.",
+      "The scene root cannot be removed."
+    ],
+    "see": "SKILL.md#scene-editing-surface"
+  },
+  "reorder_node": {
+    "summary": "Move a node to a different sibling index under the same parent.",
+    "params": {
+      "scene_path": "(required) scene to edit — \"scenes/menu.tscn\"",
+      "node_path": "(required) node to move — \"root/Panel/StartButton\"",
+      "index": "(default: -1 = last) new sibling position, clamped to the valid range"
+    },
+    "example": {
+      "scene_path": "scenes/menu.tscn",
+      "node_path": "root/Panel/StartButton",
+      "index": 0
+    },
+    "notes": [
+      "Sibling order is draw order for Control and CanvasItem nodes — later siblings draw on top.",
+      "Inside a BoxContainer/GridContainer it is also the layout order."
+    ],
+    "see": "SKILL.md#scene-editing-surface"
+  },
+  "reparent_node": {
+    "summary": "Move a node (with its subtree) under a different parent.",
+    "params": {
+      "scene_path": "(required) scene to edit — \"scenes/main.tscn\"",
+      "node_path": "(required) node to move, by its path before the move — \"root/Player\"",
+      "new_parent_node_path": "(required) destination parent — \"root/World\"",
+      "keep_global_transform": "(default: true) preserve the on-screen position by rewriting the local transform",
+      "index": "(default: -1 = last) sibling position under the new parent"
+    },
+    "example": {
+      "scene_path": "scenes/main.tscn",
+      "node_path": "root/Player",
+      "new_parent_node_path": "root/World",
+      "keep_global_transform": true,
+      "index": 0
+    },
+    "notes": [
+      "Ownership is re-applied to the scene root so the moved subtree still serializes.",
+      "node_path is the node's path before the move; later operations must use the new path."
+    ],
+    "see": "SKILL.md#scene-editing-surface"
+  },
+  "resave_resources": {
+    "summary": "Resave scenes and script-like resources under a path, then report how many .uid sidecars were created versus still missing.",
+    "params": {
+      "project_path": "(required) subtree to resave — \"res://\""
+    },
+    "example": {
+      "project_path": "res://"
+    },
+    "notes": [
+      "Headless-saved .tres/.tscn files carry no uid= header; run this after bulk creation when the project cross-references by UID.",
+      "Read the created/still-missing counts instead of assuming every resave produced a UID."
+    ],
+    "see": "SKILL.md#scene-editing-surface"
+  },
+  "resource_batch": {
+    "summary": "Transactional Resource authoring: load/create/duplicate, set properties and metadata, call builder methods, bake navmeshes, save once.",
+    "params": {
+      "resource_path": "(required) .tres/.res to open or create — \"paths/patrol.tres\"",
+      "actions": "(required) ordered array; every entry is {\"type\": <one of action_types>} plus that type's keys",
+      "create_if_missing": "(default: false) create the resource when the file does not exist",
+      "resource_type": "(default: \"Resource\") engine class to create with create_if_missing — \"Curve2D\", \"StyleBoxFlat\", \"NavigationPolygon\"",
+      "script": "(no default) custom Resource script to attach instead of / alongside resource_type — \"items/item_data.gd\"",
+      "duplicate_from": "(no default) deep-copy this resource instead of creating an empty one",
+      "duplicate_subresources": "(default: true) with duplicate_from, also copy nested sub-resources",
+      "save_path": "(default: same as resource_path) write the result elsewhere"
+    },
+    "action_types": {
+      "set_properties": {
+        "properties": "(required) {property_name: typed JSON value}"
+      },
+      "set_indexed_properties": {
+        "properties": "(required) {\"sub/path\": typed JSON value} — {\"content_margin/left\": 12}"
+      },
+      "set_metadata": {
+        "metadata": "(required) {name: typed JSON value} written with set_meta"
+      },
+      "remove_metadata": {
+        "names": "(required) metadata names to erase — [\"obsolete\"]"
+      },
+      "set_resource_name": {
+        "resource_name": "(required) the resource's resource_name"
+      },
+      "call_method": {
+        "method": "(required) method that exists on the resource — \"add_point\"",
+        "args": "(default: []) typed JSON arguments, including {\"__resource\"} / {\"__resource_type\"} values",
+        "expect_ok": "(default: false) fail the transaction when an Error-returning method does not return OK"
+      },
+      "bake_navmesh": {
+        "traversable_outlines": "(2D NavigationPolygon) [[[x,y], ...], ...] walkable outlines, 3+ points each",
+        "obstruction_outlines": "(2D, default: []) [[[x,y], ...], ...] holes cut out of the walkable area",
+        "faces": "(3D NavigationMesh) flat list of [x,y,z] triangle vertices, a multiple of 3",
+        "source_meshes": "(3D, default: []) [{\"mesh\": \"res://...\"}] collision/procedural meshes to bake from"
+      }
+    },
+    "example": {
+      "resource_path": "paths/patrol.tres",
+      "create_if_missing": true,
+      "resource_type": "Curve2D",
+      "actions": [
+        {
+          "type": "set_properties",
+          "properties": {
+            "bake_interval": 5.0
+          }
+        },
+        {
+          "type": "call_method",
+          "method": "add_point",
+          "args": [
+            {
+              "__type": "Vector2",
+              "x": 0,
+              "y": 0
+            }
+          ]
+        },
+        {
+          "type": "call_method",
+          "method": "add_point",
+          "args": [
+            {
+              "__type": "Vector2",
+              "x": 200,
+              "y": 0
+            }
+          ]
+        }
+      ]
+    },
+    "notes": [
+      "The file is written only after every action succeeds, so a failed action leaves the old resource untouched.",
+      "Prefer set_properties (inspectable through inspect_resource) and keep call_method for builder-only APIs: Curve2D.add_point, Gradient.add_point, Theme.set_color, Animation.add_track, TileSet.add_source, SpriteFrames.add_animation.",
+      "bake_navmesh needs collision/procedural geometry — the headless renderer cannot read visual meshes back from the GPU. Set agent/cell parameters with a preceding set_properties.",
+      "Dedicated ops exist for the common resources: build_tileset, build_theme, build_animation, build_replication_config."
+    ],
+    "see": "references/automation_api.md#resource-transactions"
+  },
+  "save_scene": {
+    "summary": "Load a scene and write it back, to the same path or to a new one.",
+    "params": {
+      "scene_path": "(required) scene to load — \"scenes/main.tscn\"",
+      "save_path": "(default: same as scene_path) write the result here — \"scenes/main_copy.tscn\"",
+      "new_path": "(compatibility alias for save_path) prefer save_path in new calls"
+    },
+    "example": {
+      "scene_path": "scenes/main.tscn",
+      "save_path": "scenes/main_copy.tscn"
+    },
+    "notes": [
+      "Use it to duplicate a scene, or to normalize a hand-edited .tscn through the engine's own serializer.",
+      "It re-serializes the whole file, so hand-written formatting and comments are not preserved."
+    ],
+    "see": "SKILL.md#scene-editing-surface"
+  },
+  "scene_batch": {
+    "summary": "Run a sequence of scene actions against one scene in memory and save only if every action succeeded.",
+    "params": {
+      "scene_path": "(required) scene to open or create — \"scenes/menu.tscn\"",
+      "actions": "(required) ordered array; every entry is {\"type\": <one of action_types>} plus that action's keys (its operation's keys minus scene_path/save_path)",
+      "create_if_missing": "(default: false) create the scene when the file does not exist",
+      "root_node_type": "(default: \"Node2D\") root class used when creating — \"Control\", \"Node3D\"",
+      "root_node_name": "(default: \"root\") root node name used when creating",
+      "save_path": "(default: same as scene_path) write the result elsewhere"
+    },
+    "action_types": {
+      "add_node": "@add_node",
+      "instantiate_scene": "@instantiate_scene",
+      "configure_node": "@configure_node",
+      "configure_control": "@configure_control",
+      "attach_script": "@attach_script",
+      "connect_signal": "@connect_signal",
+      "disconnect_signal": "@disconnect_signal",
+      "remove_node": "@remove_node",
+      "reparent_node": "@reparent_node",
+      "reorder_node": "@reorder_node",
+      "load_sprite": "@load_sprite",
+      "build_sprite_frames": "@build_sprite_frames",
+      "paint_tilemap": "@paint_tilemap",
+      "paint_gridmap": "@paint_gridmap",
+      "bake_collision": "@bake_collision",
+      "collision_from_sprite": "@collision_from_sprite",
+      "bake_csg": "@bake_csg"
+    },
+    "example": {
+      "scene_path": "scenes/menu.tscn",
+      "create_if_missing": true,
+      "root_node_type": "Control",
+      "root_node_name": "Menu",
+      "actions": [
+        {
+          "type": "add_node",
+          "parent_node_path": "root",
+          "node_type": "PanelContainer",
+          "node_name": "Panel"
+        },
+        {
+          "type": "configure_control",
+          "node_path": "root/Panel",
+          "layout_preset": "FULL_RECT"
+        },
+        {
+          "type": "add_node",
+          "parent_node_path": "root/Panel",
+          "node_type": "Button",
+          "node_name": "StartButton",
+          "properties": {
+            "text": "Start"
+          }
+        },
+        {
+          "type": "connect_signal",
+          "node_path": "root/Panel/StartButton",
+          "signal_name": "pressed",
+          "target_node_path": "root",
+          "method_name": "_on_start_pressed"
+        }
+      ]
+    },
+    "notes": [
+      "This is the default entrypoint for scene work: the scene loads once, actions run in order, and nothing is written if any action fails.",
+      "An action takes its own operation's keys minus scene_path and save_path — the batch owns opening and saving the scene.",
+      "Every action entry is param-checked the same way the top-level object is, so a misspelled key inside actions[2] is reported as actions[2].<key>.",
+      "create_if_missing + root_node_type make it an idempotent create-or-open."
+    ],
+    "see": "SKILL.md#scene-editing-surface"
+  },
+  "set_import_options": {
+    "summary": "Patch the [params] section of an asset's .import sidecar and invalidate the imported artifact.",
+    "params": {
+      "file_path": "(required) the asset, not its .import sidecar — \"audio/bgm.ogg\"",
+      "options": "(required) importer parameters to write — {\"loop\": true, \"loop_offset\": 0.0}"
+    },
+    "example": {
+      "file_path": "audio/bgm.ogg",
+      "options": {
+        "loop": true,
+        "loop_offset": 0.0
+      }
+    },
+    "notes": [
+      "Follow with `python3 scripts/import/import_project.py <project>` (or `godot --headless --import`) — the op reports reimport_required: true and changes nothing until the importer runs.",
+      "WAV loop is edit/loop_mode and the importer enum is offset from the resource enum: 0 Detect, 1 Disabled, 2 Forward, 3 Ping-Pong, 4 Backward. Ogg/MP3 use the loop bool plus loop_offset seconds.",
+      "Whole-number values are written as ints — JSON numbers arrive as floats and importer params are typed.",
+      "The keys inside options are importer parameter names and are never param-checked; audit_imports reports whether the reimport landed."
+    ],
+    "see": "references/automation_api.md#set_import_options"
+  },
+  "setup_audio_buses": {
+    "summary": "Create or update the project's audio buses, sends, volumes, and effects, then save and register the layout.",
+    "params": {
+      "buses": "(required) ordered [{\"name\", \"send\", \"volume_db\", \"mute\", \"solo\", \"bypass_effects\", \"effects\": [{\"type\", \"enabled\", \"properties\"}]}]; send defaults to \"Master\"",
+      "save_path": "(default: \"default_bus_layout.tres\") where the AudioBusLayout is written",
+      "set_project_setting": "(default: true) also write audio/buses/default_bus_layout"
+    },
+    "example": {
+      "buses": [
+        {
+          "name": "Master",
+          "volume_db": 0.0
+        },
+        {
+          "name": "Music",
+          "send": "Master",
+          "volume_db": -6.0
+        },
+        {
+          "name": "SFX",
+          "send": "Master",
+          "effects": [
+            {
+              "type": "AudioEffectLowPassFilter",
+              "enabled": true,
+              "properties": {
+                "cutoff_hz": 4000.0
+              }
+            }
+          ]
+        }
+      ],
+      "save_path": "default_bus_layout.tres",
+      "set_project_setting": true
+    },
+    "notes": [
+      "Order buses before the buses that send to them; the Master bus cannot have a send.",
+      "Providing effects replaces that bus's whole effect chain, which keeps reruns idempotent.",
+      "Values equal to the engine default are omitted from project.godot by design.",
+      "Route a player to a bus with configure_node: {\"properties\": {\"bus\": \"Music\"}} on an AudioStreamPlayer."
+    ],
+    "see": "references/automation_api.md#setup_audio_buses"
+  }
+}

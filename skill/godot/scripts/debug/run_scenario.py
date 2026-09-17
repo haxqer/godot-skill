@@ -36,11 +36,26 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+RESULT_MARKER = "[SCENARIO_RESULT] "
+
+
 def extract_payload(output: str) -> dict:
-    for line in reversed(output.splitlines()):
-        line = line.strip()
-        if line.startswith("{") and line.endswith("}"):
-            return json.loads(line)
+    """Pull the runner's result JSON out of its stdout.
+
+    Steps now print human-readable material of their own — ``ui_report`` ASCII
+    rows, ``dump_tree`` lines, screenshot summaries — so the payload carries a
+    marker rather than relying on "last line that looks like JSON". The old
+    heuristic stays as a fallback for a runner without the marker.
+    """
+    lines = output.splitlines()
+    for line in reversed(lines):
+        stripped = line.strip()
+        if stripped.startswith(RESULT_MARKER):
+            return json.loads(stripped[len(RESULT_MARKER):])
+    for line in reversed(lines):
+        stripped = line.strip()
+        if stripped.startswith("{") and stripped.endswith("}"):
+            return json.loads(stripped)
     return {"ok": False, "errors": ["scenario runner emitted no JSON payload"]}
 
 

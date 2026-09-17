@@ -5,13 +5,15 @@ Read this reference when invoking the bundled inspection, resource/project editi
 ## Contents
 
 - Dispatcher invocation
-- Inspection operations
+- Discovering operations (`help`)
+- Inspection operations: project, scene, resource, image, tilemap
 - Resource transactions
 - Project settings transactions
 - Content authoring: tilesets, tilemaps, sprite atlases, animations, audio buses, themes, gridmaps, 3D collision/CSG, glTF export, navmesh baking, replication config
 - Unit tests (GUT / GdUnit4)
+- Static lint (no Godot needed)
 - Import and validation
-- Scenario runner
+- Scenario runner: input and timing facts, screenshot, ui_report, dump_tree, verification without vision
 - Typed JSON values
 - Export preflight and patches
 
@@ -26,6 +28,47 @@ godot --headless --path /absolute/project \
 ```
 
 Use project-relative paths with or without `res://`; outputs normalize them to `res://`.
+
+## Discover Operations (`help`)
+
+`help` answers "what can this dispatcher do, and what does that operation take" without reading this file. Nothing in it is hand-maintained: the operation list is read out of `dispatcher.gd`'s own `match` arms and the accepted parameter keys are re-derived from each operation's sources by the same function that backs the unknown-parameter check, so it cannot describe an operation the dispatcher cannot run.
+
+```bash
+godot --headless --path /absolute/project \
+  --script /absolute/godot/scripts/core/dispatcher.gd \
+  help '{"op":"add_node"}'
+```
+
+```json
+{
+  "op": "add_node",
+  "summary": "Add one new node of a class under an existing node and save the scene.",
+  "params": {
+    "scene_path": "(required) scene to edit, project-relative or res:// — \"scenes/main.tscn\"",
+    "node_type": "(required) class to instantiate: any instantiable engine class or project class_name — \"Sprite2D\", \"CharacterBody2D\", \"VBoxContainer\"",
+    "node_name": "(required) name of the new node, and its path segment afterwards — \"Player\"",
+    "parent_node_path": "(default: \"root\") path from the scene root, which is always addressed as \"root\" — \"root/Panel\"",
+    "index": "(default: -1 = last) sibling position to insert at; for Control/CanvasItem siblings this is also draw order",
+    "properties": "(default: {}) node properties by name, typed JSON — {\"position\": {\"__type\": \"Vector2\", \"x\": 160, \"y\": 96}, \"text\": \"Start\"}",
+    "…": "…"
+  },
+  "example": {"scene_path": "scenes/main.tscn", "parent_node_path": "root", "node_type": "Sprite2D", "node_name": "Player",
+              "properties": {"position": {"__type": "Vector2", "x": 160, "y": 96}}},
+  "notes": ["Node paths start at the scene root, which is always addressed as \"root\" (or \".\"): \"root/Panel/Start\".", "…"],
+  "see": "SKILL.md#scene-editing-surface",
+  "command": "godot --headless --path /absolute/project --script /absolute/godot/scripts/core/dispatcher.gd add_node '{\"scene_path\":\"scenes/main.tscn\",…}'"
+}
+```
+
+- `help '{}'` lists every operation with a one-line summary plus `count` and a `usage` line. This is the cheapest way to find the right operation name — cheaper than grepping this file, and it can never be out of date.
+- `help '{"op":"<name>"}'` returns that operation's `summary`, its `params` schema, a runnable `example`, `notes` (the gotchas that cost a rerun), a `see` pointer into the docs, and `command` — the complete shell line with the example already inlined, absolute dispatcher path and all. Paste it, then edit it.
+- `params` is a curated `{key: meaning}` object holding only the keys that operation uses, required keys first, each one saying `(required)` or `(default: X)` and the value shape it accepts. Read it instead of guessing: `"parent_node_path": "(default: \"root\") path from the scene root, which is always addressed as \"root\" — \"root/Panel\""`.
+- Batch operations add `action_types`, one schema per `actions[*].type`. A `scene_batch` action takes its operation's own keys minus `scene_path`/`save_path`, which the batch owns, and that is exactly what the op prints.
+- `"verbose": true` adds `accepted_keys`: the full derived key set the unknown-parameter check allows, which includes the shared scene/codec helper keys. It is the audit view, not the documentation — reach for it only when a key was rejected and you want to know what the check actually sees.
+- `"format": "text"` renders the same information as plain lines (one operation per line for the listing, a `key — meaning` line per parameter for one operation) instead of JSON.
+- An unknown operation name is an error, not an empty result: it names the three nearest real operations and exits `1`. The dispatcher's own `Unknown operation:` error does the same and ends with `Run: help '{}' to list operations`, and an unknown parameter ends with `Run: help '{"op":"add_node"}' for the accepted keys and an example`.
+- `help '{"check_examples":true}'` re-derives every operation's accepted keys and validates every curated `params` key, every `action_types` key and every example key (including each `actions[*]` entry) against them, printing `{"checked", "operations", "skipped", "failures":[{"op","key","suggestions"}]}` and exiting `1` on any failure. Run it after renaming a parameter: it is what stops the schema from documenting a key the operation would reject.
+- The prose lives in `scripts/core/op_examples.json`, one entry per operation (`{"summary", "params", "example", "notes", "see"}`, plus `action_types` for a batch operation, where a value of `"@<operation>"` reuses that operation's schema). Adding an operation means adding a `match` arm **and** an entry — `check_examples` reports an operation with no entry, or an entry with no `params` schema, as a failure.
 
 ## Inspection Operations
 
@@ -48,10 +91,78 @@ Use project-relative paths with or without `res://`; outputs normalize them to `
 - `include_schema` (default `false`): enable only when property type/usage metadata is needed.
 - `max_resource_depth` (default `2`).
 - Returns stored values, dependencies, UID, and script method/signal/property metadata when the resource is a Script.
+- For a script-backed `.tres`, `resource_type` is the engine base (usually `Resource`); the identifying fields are `script_path` (the `res://….gd`), `script_class` (the script's `class_name`, empty when it declares none), and `script_properties` (its exported property names, in declaration order). The exported values themselves appear in the ordinary `properties` map.
+
+### inspect_image
+
+Reads an image file as numbers and ASCII, so "did the sprite render", "where is it", "is the palette pixel-art sized", "did the frame change" are text questions. It loads the file directly (`Image.load_from_file`), never through the import pipeline, so freshly generated art works before `--import` has ever run and screenshots outside the project work by absolute path.
+
+```json
+{
+  "image_path": "art/player.png",
+  "ascii": true,
+  "ascii_width": 64,
+  "ascii_color": false,
+  "compare_to": "art/player_reference.png",
+  "max_unique": 4096,
+  "background_tolerance": 0.12,
+  "expect": {"not_blank": true, "min_opaque_ratio": 0.1, "max_unique_colors": 32,
+             "has_alpha": true, "width": 32, "height": 32, "max_diff_ratio": 0.01},
+  "format": "json"
+}
+```
+
+```json
+{
+  "image_path": "res://art/player.png",
+  "width": 64, "height": 64, "has_alpha": true, "blank": false, "opaque_ratio": 0.0625,
+  "content_bbox": {"x": 32, "y": 8, "w": 16, "h": 16},
+  "content_bbox_normalized": {"x": 0.5, "y": 0.125, "w": 0.25, "h": 0.25},
+  "mean_color": "#ff0000",
+  "dominant_colors": [{"hex": "#ff0000", "ratio": 1.0}],
+  "unique_colors": 1,
+  "quadrants": {"top_left": 0.0, "top_right": 1.0, "bottom_left": 0.0, "bottom_right": 0.0},
+  "background_color": "#000000", "background_transparent": true, "background_tolerance": 0.0,
+  "sample_size": {"width": 64, "height": 64}, "sampled": false,
+  "ascii": ["                        ", "…"],
+  "diff_ratio": 0.0,
+  "expect_results": [{"check": "not_blank", "expected": true, "actual": true, "passed": true}],
+  "expect_passed": true
+}
+```
+
+- `image_path` accepts `res://`, `user://`, an absolute host path, or a bare project-relative path; `.png`, `.jpg`, `.jpeg`, `.webp`, `.bmp`, `.tga`, `.svg`, `.exr`, `.hdr`.
+- **Background** is the colour the four corner pixels agree on (ties go to the top-left corner), and a fully transparent pixel is always background. **Content** is every other pixel: that is what `content_bbox` bounds and what `quadrants` splits — the four shares are of the content, so `{"top_right": 1.0}` means everything drawn sits in the top-right quarter.
+- **Lossy files ring.** JPEG paints near-background pixels around every edge, and an exact match stretches `content_bbox` over the whole chroma-bleed block (a 16 px sprite at y=8 reported as 32 rows from y=0). `background_tolerance` is the per-channel distance (0-1) under which a pixel still counts as background; it defaults to `0.12` for `.jpg`/`.jpeg` and `0` for everything else, and the result reports the value that applied. With it the JPEG box lands within a pixel of the true one. Pass it explicitly for lossy WebP or a noisy capture, or `0` to force exact matching.
+- `blank` is `true` when every pixel is identical or nothing is opaque anywhere — the "nothing rendered" case. `opaque_ratio` is the share of pixels with any alpha at all (`1.0` for an opaque image, `0.0` for an empty canvas).
+- `dominant_colors` are the top 8 buckets quantised to 4 bits per channel with their share of the *drawn* pixels; `unique_colors` counts exact RGBA values among drawn pixels, capped at `max_unique` (default 4096, reported as the cap when exceeded). `mean_color` averages the drawn pixels only, so a sprite on a transparent canvas reports its own colour rather than a wash toward black.
+- `ascii` (with `ascii_width`, default 64) renders the image with the ramp `" .:-=+*#%@"`, halving the row count because character cells are about twice as tall as they are wide (`ascii_width` is clamped to 4-240, and a very tall image loses columns rather than producing hundreds of rows). Cells are area-averaged, transparent cells are spaces, and the ramp is stretched across the luminance actually present so a dark scene still shows its shapes. `ascii_color` renders the same grid as the nearest of `K W R G B Y C M` per cell. Both are printed after the key facts by `"format": "text"`.
+- `compare_to` adds `diff_ratio`: the share of pixels where some channel differs by more than 8/255. Byte-identical images answer exactly `0.0`. Different sizes are a mistake, not a measurement — the result carries `diff_error` and the op exits 1.
+- `expect` gates the exit code: every violated key logs an error, so `echo $?` is the whole check. Keys: `not_blank`, `min_opaque_ratio`, `max_unique_colors`, `has_alpha`, `width`, `height`, `max_diff_ratio` (needs `compare_to`), and `frames_consistent`. Each is also reported in `expect_results` with its expected and actual value. An invented key is rejected with the list.
+- `image_paths` describes a list of files, a directory, or a mix of both in one call (directories expand in natural order, so `frame_2` precedes `frame_10`). The result is `{count, frames_consistent, frame_size, images[], expect_results, expect_passed}`, and `expect.frames_consistent` turns a frame sequence that changed canvas size mid-way into a failed run.
+- Cost: colour statistics are measured on a nearest-neighbour downscale capped at 256 px on the long side (`sampled` / `sample_size` say when that happened), so a 1080p screenshot describes in about 0.2 s. `width`, `height`, `has_alpha`, `blank` and `content_bbox` are always measured on the full image — a one-pixel change is still located exactly. No rendering device is needed.
+
+### inspect_tilemap
+
+`inspect_tilemap` accepts:
+
+- `scene_path` (required).
+- `node_path` (optional): defaults to the first `TileMapLayer` or `GridMap` found under the root, and the chosen path is logged and returned in `node_path`.
+- `legend` (optional): the same char → tile map `paint_tilemap.ascii_map.legend` takes. Tiles it does not name get characters auto-assigned from `#@%&*+=oxABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789` in first-seen order. Terrain entries are rejected here — a painted terrain is stored as concrete atlas tiles, so map those.
+- `bounds` (optional): `{"x", "y", "w", "h"}` (`{"x", "z", "w", "h"}` for a `GridMap`) crops the window. Without it the window is the bounding box of the used cells, so empty edge rows/columns are trimmed.
+- `format`: `json` (default) or `text` — `text` prints only the rows, plus a `y=<n>` header per layer for a `GridMap`.
+
+```json
+{"scene_path": "scenes/level.tscn", "node_path": "root/Ground", "format": "text"}
+```
+
+- A `TileMapLayer` returns `{node_path, node_type, tileset_path, bounds, cell_count, legend, counts, rows}`; a `GridMap` returns `{..., mesh_library_path, layers: [{"y": 0, "rows": [...]}]}` for every used `y`.
+- Empty cells are always `.`, and the returned `legend` is exactly what `paint_tilemap`/`paint_gridmap` accept — inspect one scene, paste `legend` + `rows` into a paint call, and the level reproduces.
+- When the scene holds no `TileMapLayer` or `GridMap` the op lists every node path and type it did find, so the next call can name a real one.
 
 ## Resource Transactions
 
-`resource_batch` loads an existing resource, creates one with `create_if_missing` plus `resource_type`, or deep-duplicates `duplicate_from`. It saves to `resource_path` only after every action succeeds.
+`resource_batch` loads an existing resource, creates one with `create_if_missing` plus either `resource_type` (an engine class) or `script` (a project `class_name X extends Resource`), or deep-duplicates `duplicate_from`. It saves to `resource_path` only after every action succeeds.
 
 ```json
 {
@@ -85,6 +196,29 @@ Prefer property-based writes because they stay inspectable through `inspect_reso
 - `call_method`: `method` (must exist on the resource), typed `args` array, optional `expect_ok` to fail the transaction when an `Error`-returning method does not return `OK`.
 - Arguments accept the full typed JSON surface, including `{"__resource": ...}` references and inline `{"__resource_type": ...}` construction, so a `call_method` can attach sub-resources.
 - Inline `{"__resource_type": ...}` construction also accepts an ordered `method_calls` array (same shape as `call_method`), so a builder-only sub-resource can be created in a single property write. It also accepts `__curve` and `__gradient` sugar — see [Typed JSON Values](#typed-json-values).
+
+Name a `script` instead of a `resource_type` to author an instance of a project's own resource class:
+
+```json
+{
+  "resource_path": "items/sword.tres",
+  "create_if_missing": true,
+  "script": "res://items/item_data.gd",
+  "actions": [
+    {"type": "set_properties", "properties": {
+      "display_name": "Sword",
+      "price": 100,
+      "tags": ["melee", "sharp"],
+      "stats": {"material": {"__resource_type": "StandardMaterial3D"}}
+    }}
+  ]
+}
+```
+
+- `script`: a `res://….gd` whose base class is `Resource` (or a Resource subclass) — the way to author the data resources a data-driven game is built from. `resource_type` is ignored when `script` is set; a contradicting `resource_type` is reported as `[INFO] resource_batch ignored resource_type=Gradient: … extends Resource`.
+- The saved `.tres` is what the editor writes: `[gd_resource type="Resource" script_class="ItemData" format=3]`, an `[ext_resource type="Script" path="res://items/item_data.gd" …]` line, and `script = ExtResource("…")` in the `[resource]` block. Typed exports round-trip as `tags = Array[String](["melee", "sharp"])`.
+- `duplicate_from` keeps the source's script, so duplicating a script-backed `.tres` yields another instance of the same custom class; `script` is ignored (and reported) in that case, and when the target file already exists.
+- Run `godot --headless --path PROJECT --import` once after adding a new `class_name` script so the global class cache knows it — otherwise other scripts that annotate `@export var item: ItemData` fail to compile.
 - `bake_navmesh`: bakes the target resource (a `NavigationPolygon` or a `NavigationMesh`) from procedural geometry using the synchronous `NavigationServer2D/3D.bake_from_source_geometry_data`. Set agent/cell parameters with a preceding `set_properties` action, then supply geometry:
   - 2D (`NavigationPolygon`): `traversable_outlines` (required, an array of `[[x,y], …]` outlines) and optional `obstruction_outlines`.
   - 3D (`NavigationMesh`): `faces` (a flat list of `[x,y,z]` triangle vertices, a multiple of 3) and/or `source_meshes` (`[{"mesh": "res://…", }]`).
@@ -175,16 +309,33 @@ Paints cells on an existing `TileMapLayer` node (the monolithic `TileMap` node i
   "scene_path": "scenes/level.tscn",
   "node_path": "root/Ground",
   "tile_set": "tilesets/world.tres",
-  "cells": [{"coords": {"x": 0, "y": 0}, "source_id": 0, "atlas_coords": {"x": 0, "y": 0}}],
-  "fills": [{"from": {"x": 0, "y": 1}, "to": {"x": 9, "y": 1}, "source_id": 0, "atlas_coords": {"x": 1, "y": 0}}],
+  "ascii_map": {
+    "legend": {
+      "#": {"source_id": 0, "atlas_coords": {"x": 0, "y": 0}, "alternative": 0},
+      "o": {"source_id": 0, "atlas_coords": {"x": 1, "y": 0}},
+      "G": {"terrain_set": 0, "terrain": 1},
+      ".": null
+    },
+    "rows": ["#####", "#ooo#", "#GGG#", "#####"],
+    "origin": {"x": 0, "y": 0},
+    "erase_unlisted": false
+  },
+  "cells": [{"coords": {"x": 9, "y": 0}, "source_id": 0, "atlas_coords": {"x": 0, "y": 0}}],
+  "fills": [{"from": {"x": 0, "y": 9}, "to": {"x": 9, "y": 9}, "source_id": 0, "atlas_coords": {"x": 1, "y": 0}}],
   "erase": [{"x": 5, "y": 5}],
   "clear": false
 }
 ```
 
-- Order per call: optional `tile_set` assignment → `clear` → `erase` → `cells` → `fills` (inclusive rectangles) → `terrain_fills`.
-- `terrain_fills`: `[{"cells": [{x,y}, ...], "terrain_set": 0, "terrain": 0}]` runs `set_cells_terrain_connect` for autotiling — the TileSet's tiles need terrain membership and peering bits (see `build_tileset`).
+- Order per call: optional `tile_set` assignment → `clear` → `erase` → `cells` → `fills` (inclusive rectangles) → `ascii_map` → `terrain_fills`. `ascii_map` therefore wins wherever it overlaps `cells`/`fills`.
+- **`ascii_map` is the readable way to author a level, and the only one a model without vision can verify** — `inspect_tilemap` reads the same rows back. Prefer it over long `cells` lists.
+- `ascii_map.rows`: an array of strings, or one `\n`-separated string (`"#####\n#...#"`). Leading/trailing empty lines are dropped. Row 0 is `origin.y` and y increases downward; character column 0 is `origin.x`. `origin` defaults to `{"x": 0, "y": 0}`.
+- `ascii_map.legend`: one character → one tile. `{"source_id", "atlas_coords", "alternative"}` paints a tile directly; `{"terrain_set", "terrain", "ignore_empty_terrains"}` is collected across the whole map and painted with `set_cells_terrain_connect` after the plain cells (mixing the two in one entry is an error). Mapping a character to `null` leaves those cells untouched — `.` and space mean that even with no legend entry.
+- `erase_unlisted: true` makes every "untouched" character (`.`, space, and any legend entry mapped to `null`) *erase* the cell instead, which is how you cut a hole in an existing map.
+- A character that is neither in the legend nor `.`/space is an **error**: the op names the unknown characters and the legend keys, paints nothing, and does not save the scene. Rows of unequal length are only a `[WARN]` — the short row simply stops early.
+- `terrain_fills`: `[{"cells": [{x,y}, ...], "terrain_set": 0, "terrain": 0}]` runs `set_cells_terrain_connect` for autotiling — the TileSet's tiles need terrain membership and peering bits (see `build_tileset`). When the TileSet has no tile matching the requested neighbourhood the engine paints **nothing**; both this and the `ascii_map` terrain path emit `[WARN] ... left N of M cells empty` instead of reporting a clean save over an empty map.
 - Painting fails fast if the atlas source has not exposed the requested `atlas_coords` — expose tiles with `build_tileset` first.
+- Read the result back as text with `inspect_tilemap`.
 
 ### build_sprite_frames (atlas mode)
 
@@ -339,6 +490,11 @@ The 3D parallel to `paint_tilemap`. `GridMap` cells exist only through `set_cell
   "node_path": "root/GridMap",
   "mesh_library": "meshlib/tiles.meshlib",
   "cell_size": {"__type": "Vector3", "x": 2, "y": 2, "z": 2},
+  "legend": {"A": {"item": 0, "orientation": 0}, "B": {"item": 1}, ".": null},
+  "ascii_layers": [
+    {"y": 0, "rows": ["AAAA", "A..A", "AAAA"]},
+    {"y": 1, "rows": ["B..B", "....", "B..B"], "origin": {"x": 0, "z": 0}}
+  ],
   "clear": false,
   "fills": [{"from": [0, 0, 0], "to": [7, 0, 7], "item": 0, "orient": 0}],
   "cells": [{"pos": [3, 1, 4], "item": 2, "orient": 22}],
@@ -346,7 +502,11 @@ The 3D parallel to `paint_tilemap`. `GridMap` cells exist only through `set_cell
 }
 ```
 
+- Order per call: `mesh_library` → `cell_size` → `clear` → `erase` → `cells` → `fills` → `ascii_layers`.
 - `pos`/`from`/`to`/`erase` accept `[x,y,z]` or `{x,y,z}`. `item` must exist in the mesh library; `orient` is a `0`–`23` orthogonal index. Also runs inside `scene_batch`.
+- `ascii_layers` is the ASCII form, one entry per horizontal slab: rows map to **z** increasing, characters to **x**, and `y` names the slab. Per-layer `origin` is `{"x": 0, "z": 0}`.
+- The `legend` is shared by every layer and takes `{"item": 0, "orientation": 0}` (`orient` is accepted too); `null`, `.` and space leave the cell untouched, and `erase_unlisted: true` makes them erase. The same rules as `paint_tilemap.ascii_map` apply: unknown character → error naming it and the legend keys, nothing painted, scene not saved; ragged rows → `[WARN]`. Every layer is validated before any cell is written.
+- Read it back with `inspect_tilemap`, which handles `GridMap` as well as `TileMapLayer`.
 
 ### bake_collision
 
@@ -424,6 +584,25 @@ python3 scripts/test/run_tests.py /absolute/project --framework gut --tests-dir 
 - Minimal GUT test: `extends GutTest` + `func test_x(): assert_eq(2 + 2, 4)`. Minimal GdUnit4 test: `extends GdUnitTestSuite` + `func test_x(): assert_int(4).is_equal(2 + 2)`.
 
 ## Import And Validation
+
+### Static Lint (No Godot Needed)
+
+```bash
+python3 scripts/debug/lint_project.py /absolute/project --pretty
+python3 scripts/debug/lint_project.py /absolute/project --only godot3_api,node_ref
+```
+
+Runs without a Godot binary, without an import step, in well under a second, and prints the same JSON shape as `godot_log_parser.py`: `ok`, `counts`, and a `diagnostics` array of `severity`, `category`, `message`, `file`, `line`, `suggested_fix` (plus `rule` and a `scan_summary` of files scanned per kind). Exit code is 1 when any error-level diagnostic exists.
+
+- Severity has one meaning: **error** = Godot refuses to parse or load the file, so the project does not run; **warning** = it compiles and runs but is risky. Every severity was checked against `godot 4.7.stable` rather than assumed.
+- Six categories, all fixed names: `godot3_api`, `inference`, `node_ref`, `unique_name`, `signal_target`, `missing_resource`. `--only cat1,cat2` filters; `--path <subdir>` restricts the walk; `--warnings-as-errors` fails on warnings; `--include-addons` opts `addons/` back in (`.godot/`, hidden directories and `.import` files are always skipped).
+- `godot3_api` catches Godot 3 API in a 4.x project — `onready var`, `export var`, `yield(`, `.instance()`, `setget`, string-form `connect("sig", obj, "method")`, `move_and_slide(velocity)`, `rand_range`, `deg2rad`, `File.new()`, `rect_min_size`, `margin_left`, `Color.white`, and the renamed classes (`KinematicBody2D`, `Spatial`, `Sprite`, `Camera`, `Pool*Array`, `StreamTexture`, …) both in `.gd` and as `type="…"` in `.tscn`/`.tres`. Every rule's fix names the exact 4.7 replacement. `references/godot3_to_4.md` is the same table as a rename doc; `--list-rules` regenerates it.
+- `inference` checks the type `:=` actually produces, classifying the **outermost** expression of the right-hand side — so `var p := _to_path(params.get("p", ""))` is silent when `_to_path()` declares `-> String`. Error (Godot refuses to parse): `.get()`, a `[...]` read from an untyped `Array`/`Dictionary`, `JSON.parse_string()`, `null`, `.call()`, a call into a same-file function with no `-> Type`. Warning (compiles, but the variable is typed bare `Node` and every later `.text`/`.play()` is unchecked): `$Node`, `%Unique`, `get_node()`, `.instantiate()`. `load()`/`preload()` are not reported — the analyzer types them. See `references/gdscript_conventions.md`.
+- `node_ref` / `unique_name` resolve every `$Path`, `%Name`, and bare `get_node("…")` in a script against the tree of each `.tscn` that attaches it — following `..`, and descending into an `instance=ExtResource(…)` child scene when a path reaches into one. A script attached to a sub-scene root is checked against that sub-scene, not the level that instances it. The fix names the scene, the node the script is attached to, and the children that *do* exist (`Panel has children: Title, Icon`).
+- `signal_target` checks every `[connection]`: `from`/`to` must be real nodes and the target's script must define the handler — `func <method>(` in GDScript, `<method>(` in a `.cs` file, and any other scripting language is skipped rather than guessed. A wrong path is dropped silently by Godot, and a missing method only fails when the signal fires.
+- `missing_resource` checks `[ext_resource]` paths, `preload()`/`load()` literals, and `project.godot`'s `run/main_scene` and `[autoload]` entries. A scene with a missing `ext_resource` still loads and instantiates, so nothing else reports it.
+- It is text-only and errs toward silence: node paths built at runtime (`str()`, `+`, `%s`) are skipped rather than guessed, only a bare (or `self.`) `get_node()`/`$`/`%` is resolved (`slot.get_node("Icon")` belongs to another node), and a name the project itself defines — `class_name File`, `static func empty()` — suppresses the matching rename rule. A node that comes from `instance=ExtResource(...)` is another scene's root: its script is checked against that `.tscn`, never the level that instances it. Nodes added with `add_child()` are reported, because they are not in any `.tscn`. Multi-line `"""` strings are scanned as code.
+- `validate_project.py` runs this pass first and merges the result: lint entries appear at the top of `diagnostics` with `"source": "lint"`, their counts fold into `counts`, the raw report is under `lint`, and lint errors alone make `ok` false. `--no-lint` opts out.
 
 Audit existing import state:
 
@@ -506,15 +685,62 @@ Create a scenario JSON and run it with `scripts/debug/run_scenario.py PROJECT SC
 }
 ```
 
-Step types are `wait_frames`, `wait_seconds`, `action`, `key`, `mouse_button`, `mouse_motion`, `joypad_button`, `joypad_motion`, `assert`, `wait_until`, `set_property`, `screenshot`, `ui_report`, and `log_marker`.
+Step types are `wait_frames`, `wait_seconds`, `action`, `key`, `mouse_button`, `mouse_motion`, `joypad_button`, `joypad_motion`, `assert`, `wait_until`, `set_property`, `screenshot`, `ui_report`, `dump_tree`, and `log_marker`. An unsupported type is rejected with the full list.
 
 - `wait_until`: polls a property assertion every frame until it passes or `timeout_seconds` (default 5) elapses — prefer it over guessing `wait_frames` counts. Fields match `assert` (`node_path`, `property`, `expected`, `operator`, `tolerance`).
 - `set_property`: writes a typed value to a node's (sub)property and waits one frame — useful for arranging state before an interaction.
 - `ui_report`: dumps the laid-out UI as text and machine-checks the layout — see below.
+- `dump_tree`: prints the live node tree with the properties you name, and returns it as data — see below.
 
 Property assertion operators are `equals`, `not_equals`, `greater_than`, `greater_or_equal`, `less_than`, `less_or_equal`, `contains`, and `approx`. Performance monitors are `fps`, `process_time`, `physics_process_time`, `static_memory`, `node_count`, `resource_count`, `draw_calls`, `primitives`, and `video_memory`; statistics are `average`, `minimum`, and `maximum`.
 
 The root viewport is always sized before the scene is added: to `viewport_size` when given, otherwise to the project's own `display/window/size/viewport_width`/`viewport_height`. A headless display server opens a 64x64 window, so without this every anchor, container layout and viewport-space input coordinate would resolve against a viewport no player ever sees.
+
+### Input And Timing Facts
+
+- An `action` step calls `Input.action_press`/`action_release`, so it moves the polled state only and `_input` / `_unhandled_input` / `_gui_input` never run. Player controllers poll and work with it; pause menus, dialog advance and interact prompts need a `key` step, which feeds a real `InputEventKey` through `Input.parse_input_event`.
+- Godot's built-in `ui_*` actions are bound by `keycode` (`ui_cancel` 4194305, `ui_accept` 4194309, `ui_down` 4194322); actions this skill creates use `physical_keycode`. Setting the wrong field produces an event matching no action at all.
+- `wait_frames` counts *process* frames, and a headless run spins those far faster than the fixed 60 Hz physics tick, so `wait_frames: 60` is a fraction of a second of simulated falling. Use `wait_seconds` or `wait_until` for anything driven by gravity, `move_and_slide`, or a Tween.
+- With `display/window/stretch/mode` set to `canvas_items`, a scenario's `viewport_size` resizes the window but the UI still lays out against the project's base viewport, so verifying a menu at "two resolutions" is one layout there. Size the type to the base viewport instead.
+
+### screenshot
+
+Captures the root viewport to a PNG **and** describes it as numbers, so a caller that cannot look at the image still learns whether anything was drawn, where, and in what colour. A screenshot step is the only thing that forces a rendered (non-headless) window.
+
+```json
+{"type": "screenshot", "path": "/absolute/output/menu.png",
+ "expect": {"not_blank": true, "min_opaque_ratio": 0.1, "max_diff_ratio": 0.02, "compare_to": "res://tests/reference/menu.png"},
+ "describe": {"ascii": true, "ascii_width": 80, "ascii_color": true}}
+```
+
+- `path` (required): `res://`, `user://`, or absolute. Parent directories are created.
+- `describe` (optional): options handed to `image_describe.describe`. `ascii` adds a luminance-ramp rendering of the capture to the summary and prints it; `ascii_width` (default 64) sets its column count; `ascii_color` adds the `K W R G B Y C M` colour grid.
+- `expect` (optional): each key that is violated fails the scenario the way a failed assertion does — the run continues, `ok` becomes false, and the message names the number that was actually measured.
+  - `not_blank`: fails when every pixel is identical or everything is transparent. The message reports the unique-colour count, `opaque_ratio` and `mean_color`.
+  - `min_opaque_ratio`: fails when the share of pixels with alpha > 0 is below the value.
+  - `compare_to` + `max_diff_ratio`: loads that PNG and fails when more than `max_diff_ratio` of the pixels differ from it. A size mismatch is reported as its own failure — capture the reference at the same `viewport_size`.
+
+An unknown key in either object is rejected with the accepted list rather than silently checking nothing.
+
+Every capture appends to `screenshots` on the result JSON:
+
+```json
+{"path": "/absolute/output/menu.png", "width": 640, "height": 320, "passed": true,
+ "summary": {"width": 640, "height": 320, "has_alpha": false, "blank": false, "opaque_ratio": 1.0,
+             "content_bbox": {"x": 24, "y": 16, "w": 576, "h": 284},
+             "content_bbox_normalized": {"x": 0.04, "y": 0.05, "w": 0.9, "h": 0.89},
+             "mean_color": "#1a1a26", "dominant_colors": [{"hex": "#111122", "ratio": 0.82}],
+             "unique_colors": 37, "quadrants": {"top_left": 0.31, "top_right": 0.2, "bottom_left": 0.29, "bottom_right": 0.2},
+             "ascii": ["....====#####...", "..."]}}
+```
+
+and prints one grep-able line (plus the ASCII rows when asked for):
+
+```
+[SCENARIO] screenshot /absolute/output/menu.png blank=false opaque=1 bbox=24,16,576,284 dominant=#111122
+```
+
+`blank=true` on a scene you believe draws something is the single most useful signal here: it means the capture is one flat colour, so the node is hidden, outside the viewport, or was never added to the tree.
 
 ### ui_report
 
@@ -524,6 +750,8 @@ Walks the scene tree and reports every visible Control's post-layout global rect
 - `include_hidden` (default `false`): also list controls that are not visible in tree. Hidden controls are described but never produce findings.
 - `path` (optional): also write the report to a JSON file (`res://`, `user://`, or absolute).
 - `label` (optional): names the report in the result; defaults to `steps[<index>]`.
+- `ascii` (default `false`): also render the layout as a character map (see below).
+- `ascii_width` (default `80`, clamped to 8–400): column count for that map.
 - `fail_on` (optional): array of finding kinds that fail the scenario the way a failed assertion does, or `["any"]`. An unknown kind is rejected instead of silently gating on nothing.
 - `min_overlap_ratio` (default `0.1`): the share of the smaller rect two siblings must share before the overlap is reported. Keeps 1px seams quiet.
 - `strict_overlap` (default `false`): set to also report the backdrop case below.
@@ -565,6 +793,25 @@ The overlap rule, precisely. A pair is reported when the parent is **not** a `Co
 
 There is deliberately no `text_clipped` finding: Godot clamps `Control.size` up to `get_combined_minimum_size()`, so a Label or Button rect is never smaller than its own text unless `clip_text`/`text_overrun_behavior` asked for truncation. Any check would have reported only deliberate elisions.
 
+With `"ascii": true` the report carries an extra `ascii` array of equal-length rows, printed after the summary line. Every visible Control's global rect is drawn as a box — `+` corners, `-` and `|` edges — with the node's name written into its top edge, truncated to the box width. The walk is pre-order, so parents are drawn first and children overwrite them: two controls that landed on each other visibly collide instead of hiding behind two similar-looking rect arrays. The row count is `ascii_width × viewport_height / viewport_width × 0.5`, because character cells are about twice as tall as they are wide, so the map keeps the screen's proportions.
+
+```
+[SCENARIO] ui_report boot ascii 72x18
++B+Title---------------------+-----------------------------------------+
+| |                          |                                         |
+| +--------------------------+                                         |
+| +Slot1-+-------------------------+                                   |
+| |      |                         |                                   |
+| +------+                         |                                   |
+| |                                |                                   |
+| +--------------------------------+                  +Close-------+   |
+|                                                     |            |   |
+|                                                     +------------+   |
++----------------------------------------------------------------------+
+```
+
+Nothing else about `ui_report` changes: the same rects, counts and findings are produced with or without `ascii`, and it still never forces a rendered window.
+
 A UI regression scenario, gated end to end:
 
 ```json
@@ -586,22 +833,81 @@ A UI regression scenario, gated end to end:
 }
 ```
 
+### dump_tree
+
+Prints the live node tree, indented, with only the properties you asked for — and returns the same thing as data. It is the discovery step: dump once, read the real node paths and values, then write precise `assert` steps against them.
+
+```json
+{"type": "dump_tree", "node_path": "/root/Main", "label": "after_click",
+ "properties": ["visible", "position", "global_position", "text", "modulate", "scale"],
+ "max_depth": 6, "include_internal": false}
+```
+
+- `node_path` (default: the current scene root, falling back to `/root`): `"."`, a path relative to the scene root, or an absolute `/root/...` path. A path that resolves to nothing is an error naming all three forms.
+- `properties` (default `["visible", "position", "text"]`): only the ones a node actually has are read — a `Sprite2D` asked for `text` simply omits it, never errors. Works for script `@export` vars too.
+- `max_depth` (default `6`): `0` dumps only the starting node, `1` adds its direct children, and so on.
+- `include_internal` (default `false`): include the internal children engine nodes add for themselves (a `ScrollContainer`'s scrollbars, a `LineEdit`'s caret timer).
+- `label` (optional): names the dump in the result; defaults to `steps[<index>]`.
+
+Values are formatted compactly: `Vector2` as `(x, y)`, `Color` as `#rrggbb` (`#rrggbbaa` when translucent), `String` quoted and trimmed to 40 characters, a `Resource` as its `resource_path` or `<ClassName>`, arrays and dictionaries as `[n items]` / `{n keys}`.
+
+```
+[SCENARIO] dump_tree boot node_path=. nodes=6 max_depth=6
+Hud (Control) visible=true position=(0, 0) size=(640, 320) modulate=#ffffff
+  Backdrop (ColorRect) visible=true position=(0, 0) size=(640, 320) modulate=#ffffff
+  Title (Label) visible=true position=(24, 16) size=(236, 32) text="Inventory" modulate=#ffffff
+  Grid (GridContainer) visible=true position=(24, 64) size=(296, 196) modulate=#ffffff
+    Slot1 (Button) visible=true position=(0, 0) size=(57, 31) text="Sword" modulate=#ffffff
+  Close (Button) visible=true position=(480, 260) size=(120, 40) text="Close" modulate=#ffffff
+```
+
+Each dump appends to a `tree_dumps` array on the result JSON. `lines` is the text above; `nodes` is the machine-readable form, with `path` relative to the dumped root (so it pastes straight into a later `node_path`) and `props` encoded through the shared typed-JSON codec:
+
+```json
+{"label": "boot", "node_path": ".", "node_count": 6,
+ "lines": ["Hud (Control) visible=true position=(0, 0)", "  Title (Label) ..."],
+ "nodes": [{"path": ".", "type": "Control", "props": {"visible": true, "position": {"__type": "Vector2", "x": 0, "y": 0}}},
+           {"path": "Title", "type": "Label", "props": {"visible": true, "text": "Inventory"}}]}
+```
+
 ### Verification Without Vision
 
-Screenshots are worthless to a model that cannot look at images, and everything else the runner produces is text. Make images the optional garnish and run this loop instead:
+Everything the runner produces is text, including the screenshots. A model that cannot look at an image loses nothing by running this loop:
 
 1. **Instrument the gameplay path.** Print one line per decision that matters (`print("[HUD] wave=%d hp=%d" % [wave, hp])`), and separate phases with `log_marker` steps so the log has section boundaries to search between.
 2. **Script the session**: `python3 scripts/debug/run_scenario.py PROJECT SCENARIO --log-file /tmp/run.log --pretty`. Input steps drive it deterministically and `wait_until` waits on state instead of guessed frame counts, so one run reaches the state worth checking.
-3. **Read the UI with `ui_report`** at every moment worth checking — after boot, after a panel opens, after a resolution change — and gate it with `fail_on` so a stacked, zero-sized or offscreen layout fails the run instead of waiting to be noticed. Scope big screens with `node_path`, and pass `path` when the report should outlive the run.
-4. **Assert the properties that carry the meaning**: `{"assertion": "property", "node_path": "HUD/Score", "property": "text", "expected": "1200"}`, plus `visible` and `node_exists` for the nodes a state change is supposed to add or reveal. Report paths are already in the right form to paste into `node_path`.
-5. **Parse the captured log**: `python3 scripts/debug/godot_log_parser.py /tmp/run.log --pretty` turns it into structured errors and warnings. The wrapper keeps `-d --ignore-error-breaks` on by default, so GDScript warnings the editor would show actually reach the log; `log_assertions` gate on the prints from step 1.
-6. **Read the exit code**: `0` only when every assertion, log assertion, performance assertion and gated `ui_report` finding passed.
+3. **Find out what is actually there with `dump_tree`.** One dump after boot gives the real node paths, classes and property values; every later `assert`, `set_property` and `ui_report` `node_path` can then be written against names that exist instead of guessed ones. Dump again after an interaction and diff the `lines` to see exactly what the click changed.
+4. **Read the UI with `ui_report`** at every moment worth checking — after boot, after a panel opens, after a resolution change. Gate it with `fail_on` so a stacked, zero-sized or offscreen layout fails the run instead of waiting to be noticed, and add `"ascii": true` when the rect list alone is not telling you where things sit. Scope big screens with `node_path`, and pass `path` when the report should outlive the run.
+5. **Assert the properties that carry the meaning**: `{"assertion": "property", "node_path": "HUD/Score", "property": "text", "expected": "1200"}`, plus `visible` and `node_exists` for the nodes a state change is supposed to add or reveal. Report and dump paths are already in the right form to paste into `node_path`.
+6. **Make the screenshot itself a text check.** `{"type": "screenshot", "path": "…", "expect": {"not_blank": true, "min_opaque_ratio": 0.1}}` catches the render that produced nothing — the case `ui_report` cannot see, because a correctly laid-out Control still draws nothing when its texture, material or camera is wrong. Add `"compare_to"` plus `"max_diff_ratio"` once a good capture exists to gate visual regressions, and `"describe": {"ascii": true}` when you want to see the frame.
+7. **Parse the captured log**: `python3 scripts/debug/godot_log_parser.py /tmp/run.log --pretty` turns it into structured errors and warnings. The wrapper keeps `-d --ignore-error-breaks` on by default, so GDScript warnings the editor would show actually reach the log; `log_assertions` gate on the prints from step 1.
+8. **Read the exit code**: `0` only when every assertion, log assertion, performance assertion, gated `ui_report` finding and screenshot `expect` passed.
+9. **Read levels back as text.** After any `paint_tilemap` / `paint_gridmap`, run `inspect_tilemap '{"scene_path": "scenes/level.tscn", "format": "text"}'` and compare the rows with what you meant to paint. This is the only check that catches an off-by-one `origin`, a legend character mapped to the wrong atlas tile, or a terrain fill that matched no tile — the scene still saves and still reports `ok` in all three cases.
 
-Each `ui_report` also prints one grep-able line, so step 5 can gate on the layout without parsing the payload:
+Each step also prints one grep-able line, so step 7 can gate on the layout and the render without parsing the payload:
 
 ```
 [SCENARIO] ui_report inventory-open controls=12 visible=12 hidden=0 findings=0 zero_size=0 offscreen=0 overlap=0
+[SCENARIO] dump_tree after_click node_path=. nodes=41 max_depth=6
+[SCENARIO] screenshot /tmp/out/inventory.png blank=false opaque=1 bbox=24,16,576,284 dominant=#111122
 ```
+
+Files are checkable too. `inspect_image` answers, for any PNG on disk, the questions a look would answer:
+
+```bash
+godot --headless --path /absolute/project \
+  --script /absolute/godot/scripts/core/dispatcher.gd \
+  inspect_image '{"image_path":"art/player.png","format":"text","ascii":true,
+                  "expect":{"not_blank":true,"has_alpha":true,"max_unique_colors":32}}'
+```
+
+- **Did the sprite render at all?** `blank: false` plus `opaque_ratio` above zero. Gate it with `{"not_blank": true, "min_opaque_ratio": 0.1}`; a file that is one flat colour is an empty capture or a failed generation, whatever its size.
+- **Did the cutout work?** `has_alpha: true` and `opaque_ratio` below `1.0`. A chroma-key pass that silently did nothing reports `has_alpha: false`, `opaque_ratio: 1.0` and a `dominant_colors` entry at `#00ff00`.
+- **Is it centred / where is it?** `content_bbox_normalized`: centred means `x + w/2` and `y + h/2` are both near `0.5`. `quadrants` says the same thing coarsely — one quadrant at `1.0` is content stuck in a corner, four near `0.25` is content spread over the frame. `content_bbox` at `{0,0,1,1}` of the normalized frame means the art fills its canvas with no margin, which is what makes a sprite clip against its collision box.
+- **Is the art pixel-art sized?** `unique_colors` — a limited palette is tens of colours, an anti-aliased or resampled export is thousands. Gate with `{"max_unique_colors": 32}`.
+- **Are all the frames the same size?** `{"image_paths": ["art/hero_idle"], "expect": {"frames_consistent": true}}` before `build_sprite_frames`; frames that changed canvas size mid-run animate as a jitter no assertion downstream will explain.
+- **Did it change?** `compare_to` plus `{"max_diff_ratio": 0.01}` against a known-good capture. `0.0` means byte-identical; print the `ascii` of both when the number says something moved.
+- **What does it look like?** `"ascii": true` (add `"ascii_color": true` for hue letters). It is a low-resolution read, not a preview: use it to confirm a shape is where the numbers say it is.
 
 ## Typed JSON Values
 
@@ -609,12 +915,15 @@ The shared codec accepts plain JSON plus:
 
 - Resource reference: `{"__resource":"res://theme/main.tres"}`.
 - Resource construction: `{"__resource_type":"Gradient","properties":{...}}`, optionally with an ordered `"method_calls":[{"method":"add_point","args":[...],"expect_ok":false}]` for builder-only state.
+- Custom resource construction: `{"__script":"res://items/item_data.gd","properties":{...}}` instantiates a project-defined `class_name ItemData extends Resource`, which `__resource_type` cannot reach because ClassDB only knows engine classes. It accepts the same `resource_name`, `properties`, and ordered `method_calls` keys as `__resource_type`, and nests to any depth. The script must resolve to a `Resource` subclass — a `Node` script is refused by name (`… extends Node2D, which is not a Resource`). Passing both `__script` and `__resource_type` in one value is an error; keep `__script`.
 - `StringName`, `NodePath`, `Vector2`, `Vector2i`, `Rect2`, `Rect2i`, `Vector3`, `Vector3i`, `Transform2D`, `Vector4`, `Vector4i`, `Plane`, `Quaternion`, `AABB`, `Basis`, `Transform3D`, `Projection`, and `Color` through `{"__type":"TypeName",...}`.
 - Packed byte/int/float/string/vector/color arrays through `{"__type":"Packed...Array","values":[...]}`.
 - Curve sugar: `{"__curve":{"min_value":0,"max_value":1,"points":[{"x":0,"y":0},{"x":1,"y":1,"left_tangent":0,"right_tangent":0}]}}` builds a `Curve` (its points are otherwise builder-only, so this is the ergonomic way to inline scale/alpha/velocity ramps).
 - Gradient sugar: `{"__gradient":{"points":[{"offset":0,"color":"..."},{"offset":1,"color":"..."}]}}` (or `{"offsets":[...],"colors":[...]}`) builds a clean `Gradient` with exactly those stops — unlike `add_point`, which appends to the two default stops.
 
 `Rect2`/`Rect2i` accept either typed `position` plus `size` dictionaries or the compatibility form `x`, `y`, `width`, `height`.
+
+Property writes are type-checked against the target's script variables before they are applied. `Object.set()` drops a mismatched write without raising, so an untyped JSON array is converted into the property's declared `Array[T]` / `Dictionary[K, V]` type, and anything genuinely incompatible fails the operation with the expected type named (`expected Vector2 but got a plain dictionary; tag the value as {"__type": "Vector2", ...}`). A misspelled property lists the script's exported names: `Property does not exist at set_properties.properties: displayname (did you mean display_name?). ItemData script properties: display_name, price, icon, tags, stats`.
 
 ## Export Preflight And Patches
 

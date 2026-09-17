@@ -45,7 +45,7 @@ func _init():
 
     var script_path := _script_path_for(operation)
     if script_path.is_empty():
-        utils_script.log_error("Unknown operation: " + operation)
+        utils_script.log_error(_unknown_operation_message(operation))
         quit(1)
         return
 
@@ -80,8 +80,19 @@ func _run(instance: Object, params: Dictionary) -> void:
     # exit code instead of parsing stderr.
     quit(1 if utils_script.had_errors else 0)
 
+func _unknown_operation_message(operation: String) -> String:
+    # Never a bare "Unknown operation": say which real names are close and how to
+    # list every one of them without reading the reference.
+    var message := "Unknown operation: " + operation
+    var table: Dictionary = utils_script.operation_table(str(get_script().resource_path))
+    var suggestions: PackedStringArray = utils_script.nearest_names(operation, table.keys())
+    if not suggestions.is_empty():
+        message += " (did you mean " + ", ".join(suggestions) + "?)"
+    message += ". Run: help '{}' to list operations"
+    return message
+
 func _validate_params(script_path: String, operation: String, params: Dictionary) -> bool:
-    var allowed := _allowed_param_keys(script_path)
+    var allowed: Dictionary = utils_script.allowed_param_keys(script_path)
     if allowed.is_empty():
         # Sources unreadable (packaged oddly?) — never block the op over that.
         return true
@@ -106,49 +117,12 @@ func _reject_unknown_keys(params: Dictionary, allowed: Dictionary, operation: St
             continue
         ok = false
         var message := "Unknown parameter for %s: %s%s" % [operation, prefix, name]
-        var suggestions := _nearest_keys(name, allowed)
+        var suggestions: PackedStringArray = utils_script.nearest_names(name, allowed.keys())
         if not suggestions.is_empty():
             message += " (did you mean " + ", ".join(suggestions) + "?)"
+        message += ". Run: help '{\"op\":\"%s\"}' for the accepted keys and an example" % operation
         utils_script.log_error(message)
     return ok
-
-func _nearest_keys(name: String, allowed: Dictionary) -> PackedStringArray:
-    var scored: Array = []
-    for candidate in allowed.keys():
-        var score: float = name.similarity(str(candidate))
-        if score >= 0.5:
-            scored.append({"key": str(candidate), "score": score})
-    scored.sort_custom(func(a, b): return a.score > b.score)
-    var best := PackedStringArray()
-    for entry in scored.slice(0, 3):
-        best.append(entry.key)
-    return best
-
-func _allowed_param_keys(script_path: String) -> Dictionary:
-    # Derived from the sources rather than a hand-maintained table: every key the
-    # operation (and everything it preloads) actually reads is allowed, so this
-    # can flag an unknown key but can never reject a supported one, and new
-    # operations need no registration.
-    var keys := {}
-    var key_regex := RegEx.create_from_string('\\.(?:get|has)\\(\\s*"([A-Za-z_][A-Za-z_0-9]*)"')
-    var preload_regex := RegEx.create_from_string('preload\\(\\s*"([^"]+)"')
-    var pending: Array[String] = [script_path.simplify_path()]
-    var seen := {}
-    while not pending.is_empty():
-        var path: String = pending.pop_back()
-        if seen.has(path):
-            continue
-        seen[path] = true
-        if not FileAccess.file_exists(path):
-            continue
-        var source := FileAccess.get_file_as_string(path)
-        if source.is_empty():
-            continue
-        for match_result in key_regex.search_all(source):
-            keys[match_result.get_string(1)] = true
-        for match_result in preload_regex.search_all(source):
-            pending.append(path.get_base_dir().path_join(match_result.get_string(1)).simplify_path())
-    return keys
 
 func _instantiate_operation(script_path: String) -> Object:
     var operation_script = load(script_path)
@@ -241,5 +215,11 @@ func _script_path_for(operation: String) -> String:
             return local_dir.path_join("../project/project_batch.gd")
         "audit_imports":
             return local_dir.path_join("../import/audit_imports.gd")
+        "inspect_tilemap":
+            return local_dir.path_join("../inspect/inspect_tilemap.gd")
+        "inspect_image":
+            return local_dir.path_join("../inspect/inspect_image.gd")
+        "help":
+            return local_dir.path_join("../core/help.gd")
         _:
             return ""

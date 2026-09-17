@@ -5,8 +5,16 @@ This runs the ``check_project`` dispatcher operation, which loads every script,
 scene, shader, and resource in the project — and instantiates every scene — then
 reports what the engine said while doing it.
 
-Two things make this match what the Godot editor shows, instead of the much
+Three things make this match what the Godot editor shows, instead of the much
 quieter output a plain CLI run produces:
+
+- It runs the static linter (``lint_project.py``) first and merges its
+  diagnostics into the same ``diagnostics`` array, before Godot is started at
+  all. That pass needs no Godot binary and reports what the engine never says
+  out loud: Godot 3 API in a 4.x project, ``:=`` on an un-inferable value,
+  ``$Panel/Missing`` node paths, ``[connection]`` blocks pointing at a method
+  nobody wrote, and ``res://`` files that do not exist. Lint errors alone make
+  ``ok`` false; ``--no-lint`` opts out.
 
 - It passes ``-d --ignore-error-breaks``. GDScript warnings are emitted through
   the script debugger channel, never straight to stdout, so without ``-d`` a
@@ -39,6 +47,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from godot_log_parser import parse_log  # noqa: E402
+from lint_project import lint_project  # noqa: E402
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -76,6 +85,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             "Do not attach the local stdout debugger (-d --ignore-error-breaks). "
             "GDScript warnings are only emitted through the debugger channel, so "
             "this suppresses every warning the editor would show."
+        ),
+    )
+    parser.add_argument(
+        "--no-lint",
+        dest="lint",
+        action="store_false",
+        help=(
+            "Skip the static lint pass (scripts/debug/lint_project.py). That pass needs no "
+            "Godot binary, runs first, and reports Godot 3 API, un-inferable ':=', broken "
+            "NodePaths, dead [connection] targets, and missing res:// files."
         ),
     )
     parser.add_argument("--pretty", action="store_true")
@@ -117,6 +136,29 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(f"Missing Godot project file: {project_path / 'project.godot'}")
     dispatcher = (args.dispatcher or Path(__file__).resolve().parents[1] / "core/dispatcher.gd").resolve()
 
+    # The static lint runs first: it needs no Godot binary, finishes in well under
+    # a second, and catches the failures the engine is quiet about (a missing
+    # ext_resource still loads, a wrong [connection] path is dropped silently).
+    lint: dict = {"ran": False}
+    lint_diagnostics: list[dict] = []
+    if args.lint:
+        lint = lint_project(
+            project_path,
+            subpath=args.project_subpath.replace("res://", ""),
+            warnings_as_errors=args.warnings_as_errors,
+        )
+        lint["ran"] = True
+        for entry in lint["diagnostics"]:
+            merged = dict(entry)
+            merged.setdefault("function", None)
+            merged.setdefault("stack", [])
+            merged.setdefault("raw", "")
+            merged["occurrences"] = 1
+            merged["source"] = "lint"
+            lint_diagnostics.append(merged)
+        if args.no_warnings:
+            lint_diagnostics = [d for d in lint_diagnostics if d["severity"] != "warning"]
+
     # Passed explicitly rather than left to the operation's default: this is the
     # comprehensive pass, and a scene that cannot be instantiated must fail it.
     params: dict = {"instantiate": args.instantiate}
@@ -150,6 +192,11 @@ def main(argv: list[str] | None = None) -> int:
         csharp["ok"] = True
 
     counts = report["counts"]
+    lint_errors = sum(1 for d in lint_diagnostics if d["severity"] == "error")
+    lint_warnings = sum(1 for d in lint_diagnostics if d["severity"] == "warning")
+    counts["errors"] += lint_errors
+    counts["warnings"] += lint_warnings
+    counts["total"] += len(lint_diagnostics)
     log_clean = counts["errors"] == 0 and counts["parse_errors"] == 0
     if args.warnings_as_errors and counts["warnings"]:
         log_clean = False
@@ -164,7 +211,11 @@ def main(argv: list[str] | None = None) -> int:
         "project_path": str(project_path),
         "static": static,
         "counts": counts,
-        "diagnostics": report["diagnostics"],
+        # Lint diagnostics come first: a Godot 3 identifier or a missing file is
+        # usually the cause of the engine errors underneath it.
+        "diagnostics": lint_diagnostics + report["diagnostics"],
+        "lint": {key: lint[key] for key in ("ran", "ok", "counts", "categories", "scan_summary")
+                 if key in lint},
         "godot": command_result(checked),
         "csharp": csharp,
     }

@@ -44,6 +44,16 @@ func execute(params: Dictionary) -> void:
     var uid := ResourceLoader.get_resource_uid(resource_path)
     result["uid"] = ResourceUID.id_to_text(uid) if uid != ResourceUID.INVALID_ID else ""
 
+    # A `.tres` backed by a project script reports resource_type "Resource", so
+    # name the script and its class_name too — that is what identifies the type
+    # a custom resource actually is, and which properties it accepts.
+    var attached = resource.get_script()
+    if attached is Script:
+        var attached_script := attached as Script
+        result["script_path"] = str(attached_script.resource_path)
+        result["script_class"] = str(attached_script.get_global_name())
+        result["script_properties"] = Array(codec.script_property_names(resource))
+
     if resource is Script:
         var script := resource as Script
         result["script"] = {

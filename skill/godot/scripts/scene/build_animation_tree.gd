@@ -133,11 +133,11 @@ func _build_transition(transition_params: Dictionary) -> AnimationNodeStateMachi
         if not ClassDB.class_get_integer_constant_list("AnimationNodeStateMachineTransition").has(mode_name):
             utils_script.log_error("Unknown advance_mode: " + str(transition_params.get("advance_mode")))
             return null
-        transition.advance_mode = ClassDB.class_get_integer_constant("AnimationNodeStateMachineTransition", mode_name)
+        transition.advance_mode = ClassDB.class_get_integer_constant("AnimationNodeStateMachineTransition", mode_name) as AnimationNodeStateMachineTransition.AdvanceMode
     if transition_params.has("switch_mode"):
         var switch_name := "SWITCH_MODE_" + str(transition_params.get("switch_mode")).to_upper()
         if not ClassDB.class_get_integer_constant_list("AnimationNodeStateMachineTransition").has(switch_name):
             utils_script.log_error("Unknown switch_mode: " + str(transition_params.get("switch_mode")))
             return null
-        transition.switch_mode = ClassDB.class_get_integer_constant("AnimationNodeStateMachineTransition", switch_name)
+        transition.switch_mode = ClassDB.class_get_integer_constant("AnimationNodeStateMachineTransition", switch_name) as AnimationNodeStateMachineTransition.SwitchMode
     return transition

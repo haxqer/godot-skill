@@ -10,7 +10,8 @@ func execute(params: Dictionary) -> void:
         utils_script.log_error("resource_batch requires resource_path or save_path")
         return
 
-    var resource := _open_resource(params, target_path)
+    var codec = codec_script.new()
+    var resource := _open_resource(params, target_path, codec)
     if resource == null:
         return
 
@@ -19,7 +20,6 @@ func execute(params: Dictionary) -> void:
         utils_script.log_error("resource_batch actions must be an array")
         return
 
-    var codec = codec_script.new()
     for index in range(actions.size()):
         var raw_action = actions[index]
         if not (raw_action is Dictionary):
@@ -36,37 +36,63 @@ func execute(params: Dictionary) -> void:
         utils_script.log_error("Failed to save resource %s: %s" % [target_path, error_string(save_error)])
         return
 
-    print(JSON.stringify({
+    var result := {
         "ok": true,
         "resource_path": target_path,
         "resource_type": resource.get_class(),
         "actions_applied": actions.size()
-    }))
+    }
+    var attached = resource.get_script()
+    if attached is Script:
+        result["script_path"] = str((attached as Script).resource_path)
+        result["script_class"] = str((attached as Script).get_global_name())
+    print(JSON.stringify(result))
 
-func _open_resource(params: Dictionary, target_path: String) -> Resource:
+func _open_resource(params: Dictionary, target_path: String, codec: RefCounted) -> Resource:
+    var script_path := _normalize_res_path(params.get("script", ""))
     var duplicate_from := _normalize_res_path(params.get("duplicate_from", ""))
     if not duplicate_from.is_empty():
         var source = ResourceLoader.load(duplicate_from, "", ResourceLoader.CACHE_MODE_IGNORE)
         if not (source is Resource):
             utils_script.log_error("Failed to load duplicate_from resource: " + duplicate_from)
             return null
-        return (source as Resource).duplicate(bool(params.get("duplicate_subresources", true)))
+        # duplicate() carries the source's script across, so a script-backed
+        # .tres stays an instance of its custom class.
+        var copy := (source as Resource).duplicate(bool(params.get("duplicate_subresources", true)))
+        if not script_path.is_empty():
+            utils_script.log_info("resource_batch ignored script=%s: duplicate_from keeps the script of %s" % [script_path, duplicate_from])
+        return copy
 
     if FileAccess.file_exists(target_path):
         var existing = ResourceLoader.load(target_path, "", ResourceLoader.CACHE_MODE_IGNORE)
         if not (existing is Resource):
             utils_script.log_error("Failed to load resource: " + target_path)
             return null
+        if not script_path.is_empty():
+            utils_script.log_info("resource_batch ignored script=%s: %s already exists and keeps its own script" % [script_path, target_path])
         return existing
 
     if not bool(params.get("create_if_missing", false)):
-        utils_script.log_error("Resource does not exist: " + target_path)
+        utils_script.log_error("Resource does not exist: %s (add \"create_if_missing\": true plus \"resource_type\" or \"script\" to create it)" % target_path)
         return null
+
+    if not script_path.is_empty():
+        # A project-defined `class_name X extends Resource` is invisible to
+        # ClassDB, so it is created from its script instead of a type name.
+        var scripted = codec.instantiate_script_resource(script_path, "resource_batch.script")
+        if not (scripted is Resource):
+            return null
+        if params.has("resource_type"):
+            var declared := str(params.get("resource_type", ""))
+            var base := str(scripted.get_class())
+            if declared != base and not ClassDB.is_parent_class(base, declared):
+                utils_script.log_info("resource_batch ignored resource_type=%s: %s extends %s" % [declared, script_path, base])
+        return scripted as Resource
 
     var resource_type := str(params.get("resource_type", "Resource"))
     var candidate = utils_script.instantiate_class(resource_type)
     if not (candidate is Resource):
-        utils_script.log_error("Resource type cannot be instantiated: " + resource_type)
+        utils_script.log_error("Resource type cannot be instantiated: %s (use an engine class name, or pass \"script\": \"res://...\" for a custom `class_name ... extends Resource`)" % resource_type)
         return null
     return candidate
 

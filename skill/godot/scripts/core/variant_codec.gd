@@ -9,6 +9,8 @@ func decode(value: Variant, context: String = "value") -> Variant:
             var dictionary := value as Dictionary
             if dictionary.has("__resource"):
                 return _load_resource(dictionary.get("__resource"), context)
+            if dictionary.has("__script"):
+                return _create_script_resource(dictionary, context)
             if dictionary.has("__resource_type"):
                 return _create_resource(dictionary, context)
             if dictionary.has("__gradient"):
@@ -165,18 +167,199 @@ func apply_properties(target: Object, raw_properties: Variant, context: String =
 
     for raw_name in raw_properties.keys():
         var property_name := str(raw_name)
-        if not use_indexed and not _has_property(target, property_name):
-            utils_script.log_error("Property does not exist at %s: %s" % [context, property_name])
+        var info := _property_info(target, property_name)
+        if not use_indexed and info.is_empty():
+            utils_script.log_error(_unknown_property_message(target, property_name, context))
             return false
         var raw_value = raw_properties[raw_name]
-        var decoded_value = decode(raw_value, "%s.%s" % [context, property_name])
+        var value_context := "%s.%s" % [context, property_name]
+        var decoded_value = decode(raw_value, value_context)
         if decoded_value == null and raw_value != null:
             return false
         if use_indexed:
             target.set_indexed(NodePath(property_name), decoded_value)
-        else:
-            target.set(property_name, decoded_value)
+            continue
+        # Typed containers and mistyped script variables are dropped silently by
+        # Object.set(), which saves the declared default instead of the value the
+        # caller asked for. Convert what is convertible, refuse the rest loudly.
+        var checked := _coerce_property_value(target, property_name, info, decoded_value, value_context)
+        if not bool(checked.get("ok", false)):
+            return false
+        target.set(property_name, checked.get("value"))
     return true
+
+func instantiate_script_resource(script_path: String, context: String) -> Resource:
+    # Shared by the `__script` typed value and resource_batch's `script` parameter
+    # so both report the same diagnostics for a bad custom-resource script.
+    if script_path.is_empty():
+        utils_script.log_error("%s requires a res:// path to a .gd script, for example res://items/item_data.gd" % context)
+        return null
+    if not ResourceLoader.exists(script_path):
+        utils_script.log_error("%s: script not found: %s. Write the .gd file first, then re-run this operation" % [context, script_path])
+        return null
+    var loaded = load(script_path)
+    if not (loaded is Script):
+        utils_script.log_error("%s: %s is not a Script. Point it at a .gd file whose first lines are `class_name YourType` and `extends Resource`" % [context, script_path])
+        return null
+    var script := loaded as Script
+    var base_type := str(script.get_instance_base_type())
+    if base_type.is_empty():
+        utils_script.log_error("%s: %s has no resolvable base class (it probably failed to compile). Run check_project on the project to see the parse error" % [context, script_path])
+        return null
+    if not ClassDB.is_parent_class(base_type, "Resource"):
+        utils_script.log_error("%s: %s extends %s, which is not a Resource. Custom resources must extend Resource (or a Resource subclass such as Texture2D); attach a %s script to a node with attach_script instead" % [context, script_path, base_type, base_type])
+        return null
+    if not script.can_instantiate():
+        utils_script.log_error("%s: %s cannot be instantiated (abstract, or it failed to compile). Run check_project to see the parse error" % [context, script_path])
+        return null
+    var instance = script.new()
+    if not (instance is Resource):
+        utils_script.log_error("%s: %s did not produce a Resource instance" % [context, script_path])
+        return null
+    return instance as Resource
+
+func script_property_names(target: Object) -> PackedStringArray:
+    # The @export / script variables of whatever script is attached, in
+    # declaration order — the list a caller needs to fix a misspelled property.
+    var names := PackedStringArray()
+    if target == null:
+        return names
+    for entry in target.get_property_list():
+        var info := entry as Dictionary
+        if int(info.get("usage", 0)) & PROPERTY_USAGE_SCRIPT_VARIABLE == 0:
+            continue
+        var property_name := str(info.get("name", ""))
+        if not property_name.is_empty():
+            names.append(property_name)
+    return names
+
+func _property_info(target: Object, property_name: String) -> Dictionary:
+    for entry in target.get_property_list():
+        var info := entry as Dictionary
+        if str(info.get("name", "")) == property_name:
+            return info
+    return {}
+
+func _unknown_property_message(target: Object, property_name: String, context: String) -> String:
+    var message := "Property does not exist at %s: %s" % [context, property_name]
+    var candidates: Array = []
+    for entry in target.get_property_list():
+        var info := entry as Dictionary
+        var usage := int(info.get("usage", 0))
+        if usage & (PROPERTY_USAGE_CATEGORY | PROPERTY_USAGE_GROUP | PROPERTY_USAGE_SUBGROUP) != 0:
+            continue
+        var name := str(info.get("name", ""))
+        if not name.is_empty():
+            candidates.append(name)
+    var suggestions := utils_script.nearest_names(property_name, candidates)
+    if not suggestions.is_empty():
+        message += " (did you mean " + ", ".join(suggestions) + "?)"
+    var attached = target.get_script()
+    var script_names := script_property_names(target)
+    if attached is Script and not script_names.is_empty():
+        var label := str((attached as Script).get_global_name())
+        if label.is_empty():
+            label = str((attached as Script).resource_path)
+        message += ". %s script properties: %s" % [label, ", ".join(script_names)]
+    return message
+
+func _coerce_property_value(target: Object, property_name: String, info: Dictionary, value: Variant, context: String) -> Dictionary:
+    var expected := int(info.get("type", TYPE_NIL))
+    if expected == TYPE_ARRAY and value is Array and not (value as Array).is_typed():
+        var current = target.get(property_name)
+        if current is Array and (current as Array).is_typed():
+            var typed_array: Array = (current as Array).duplicate()
+            typed_array.clear()
+            typed_array.assign(value as Array)
+            if typed_array.size() != (value as Array).size():
+                utils_script.log_error("%s: every element must be convertible to %s" % [context, _typed_array_label(current as Array)])
+                return {"ok": false}
+            return {"ok": true, "value": typed_array}
+    if expected == TYPE_DICTIONARY and value is Dictionary and not (value as Dictionary).is_typed():
+        var current_dictionary = target.get(property_name)
+        if current_dictionary is Dictionary and (current_dictionary as Dictionary).is_typed():
+            var typed_dictionary: Dictionary = (current_dictionary as Dictionary).duplicate()
+            typed_dictionary.clear()
+            typed_dictionary.assign(value as Dictionary)
+            if typed_dictionary.size() != (value as Dictionary).size():
+                utils_script.log_error("%s: every key and value must match the declared Dictionary types" % context)
+                return {"ok": false}
+            return {"ok": true, "value": typed_dictionary}
+    var mismatch := _type_mismatch(info, value)
+    if not mismatch.is_empty():
+        utils_script.log_error("%s: %s" % [context, mismatch])
+        return {"ok": false}
+    return {"ok": true, "value": value}
+
+func _type_mismatch(info: Dictionary, value: Variant) -> String:
+    # Only script variables are checked: GDScript refuses a mismatched write
+    # without raising, whereas engine properties go through Variant conversion
+    # and their hint metadata is far less uniform.
+    if int(info.get("usage", 0)) & PROPERTY_USAGE_SCRIPT_VARIABLE == 0:
+        return ""
+    var expected := int(info.get("type", TYPE_NIL))
+    if expected == TYPE_NIL:
+        return ""
+    if expected == TYPE_OBJECT:
+        return _object_mismatch(info, value)
+    var actual := typeof(value)
+    if actual == expected:
+        return ""
+    if _is_numeric(expected) and _is_numeric(actual):
+        return ""
+    if _is_stringy(expected) and _is_stringy(actual):
+        return ""
+    if expected == TYPE_NODE_PATH and _is_stringy(actual):
+        return ""
+    if expected >= TYPE_PACKED_BYTE_ARRAY and actual == TYPE_ARRAY:
+        return ""
+    if expected == TYPE_ARRAY and actual >= TYPE_PACKED_BYTE_ARRAY:
+        return ""
+    if actual == TYPE_DICTIONARY and expected != TYPE_DICTIONARY:
+        return "expected %s but got a plain dictionary; tag the value as {\"__type\": \"%s\", ...} so the codec builds one" % [type_string(expected), type_string(expected)]
+    return "expected %s but got %s; the engine drops a mismatched write without an error, so the file would have kept the declared default" % [type_string(expected), type_string(actual)]
+
+func _object_label(target: Object) -> String:
+    if target == null:
+        return "null"
+    var attached = target.get_script()
+    if attached is Script:
+        var global_name := str((attached as Script).get_global_name())
+        if not global_name.is_empty():
+            return "%s (%s)" % [global_name, target.get_class()]
+    return target.get_class()
+
+func _object_mismatch(info: Dictionary, value: Variant) -> String:
+    if value == null:
+        return ""
+    var wanted := str(info.get("class_name", ""))
+    if not (value is Object):
+        return "expected %s but got %s; use {\"__resource\": \"res://...\"} to reference a saved resource or {\"__resource_type\": \"...\"} to build one inline" % [wanted if not wanted.is_empty() else "an Object", type_string(typeof(value))]
+    if wanted.is_empty():
+        return ""
+    var object := value as Object
+    if ClassDB.class_exists(wanted):
+        if object.is_class(wanted):
+            return ""
+        return "expected a %s but got %s" % [wanted, object.get_class()]
+    var script = object.get_script()
+    while script is Script:
+        if str((script as Script).get_global_name()) == wanted:
+            return ""
+        script = (script as Script).get_base_script()
+    return "expected a %s but got %s; build it with {\"__script\": \"res://...\"} so the value carries the %s script" % [wanted, object.get_class(), wanted]
+
+func _typed_array_label(sample: Array) -> String:
+    var class_label := str(sample.get_typed_class_name())
+    if not class_label.is_empty():
+        return "Array[%s]" % class_label
+    return "Array[%s]" % type_string(sample.get_typed_builtin())
+
+func _is_numeric(type_id: int) -> bool:
+    return type_id == TYPE_BOOL or type_id == TYPE_INT or type_id == TYPE_FLOAT
+
+func _is_stringy(type_id: int) -> bool:
+    return type_id == TYPE_STRING or type_id == TYPE_STRING_NAME
 
 func _decode_typed(dictionary: Dictionary, context: String) -> Variant:
     var type_name := str(dictionary.get("__type", ""))
@@ -309,7 +492,22 @@ func _create_resource(dictionary: Dictionary, context: String) -> Resource:
             candidate.free()
         return null
 
-    var resource := candidate as Resource
+    return _populate_resource(candidate as Resource, dictionary, context)
+
+func _create_script_resource(dictionary: Dictionary, context: String) -> Resource:
+    # {"__script": "res://items/item_data.gd", "properties": {...}} builds an
+    # instance of a project-defined `class_name X extends Resource`, which ClassDB
+    # (and therefore `__resource_type`) cannot reach.
+    if dictionary.has("__resource_type"):
+        utils_script.log_error("%s sets both __script and __resource_type; keep __script (the script decides the base class) and drop __resource_type" % context)
+        return null
+    var script_path := _normalize_res_path(dictionary.get("__script"))
+    var resource := instantiate_script_resource(script_path, context + ".__script")
+    if resource == null:
+        return null
+    return _populate_resource(resource, dictionary, context)
+
+func _populate_resource(resource: Resource, dictionary: Dictionary, context: String) -> Resource:
     if dictionary.has("resource_name"):
         resource.resource_name = str(dictionary.get("resource_name"))
     if dictionary.has("properties") and not apply_properties(resource, dictionary.get("properties"), context + ".properties"):
@@ -335,7 +533,7 @@ func invoke_method_calls(target: Object, raw_calls: Variant, context: String) ->
             utils_script.log_error("%s[%d] requires method" % [context, index])
             return false
         if not target.has_method(method_name):
-            utils_script.log_error("%s[%d]: %s has no method %s" % [context, index, target.get_class(), method_name])
+            utils_script.log_error("%s[%d]: %s has no method %s" % [context, index, _object_label(target), method_name])
             return false
         var raw_args = raw_call.get("args", [])
         var decoded_args = decode(raw_args, "%s[%d].args" % [context, index])
@@ -354,9 +552,9 @@ func _decode_gradient(raw: Variant, context: String) -> Gradient:
     var spec := raw as Dictionary
     var gradient := Gradient.new()
     if spec.has("interpolation_mode"):
-        gradient.interpolation_mode = int(spec.get("interpolation_mode"))
+        gradient.interpolation_mode = int(spec.get("interpolation_mode")) as Gradient.InterpolationMode
     if spec.has("interpolation_color_space"):
-        gradient.interpolation_color_space = int(spec.get("interpolation_color_space"))
+        gradient.interpolation_color_space = int(spec.get("interpolation_color_space")) as Gradient.ColorSpace
     if spec.has("points"):
         var points = spec.get("points")
         if not (points is Array):
@@ -529,9 +727,3 @@ func _normalize_res_path(path_value: Variant) -> String:
     if path.begins_with("res://") or path.begins_with("user://"):
         return path
     return "res://" + path.trim_prefix("/")
-
-func _has_property(target: Object, property_name: String) -> bool:
-    for property_info in target.get_property_list():
-        if str(property_info.get("name", "")) == property_name:
-            return true
-    return false

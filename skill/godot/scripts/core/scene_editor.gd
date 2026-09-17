@@ -830,6 +830,10 @@ func paint_tilemap(params: Dictionary) -> bool:
                 if not _set_tilemap_cell(layer, fill, Vector2i(x, y)):
                     return false
 
+    if params.has("ascii_map"):
+        if not _paint_tilemap_ascii(layer, params.get("ascii_map")):
+            return false
+
     var terrain_fills = params.get("terrain_fills", [])
     if not (terrain_fills is Array):
         utils_script.log_error("paint_tilemap.terrain_fills must be an array")
@@ -849,13 +853,27 @@ func paint_tilemap(params: Dictionary) -> bool:
             if coords == null:
                 return false
             terrain_cells.append(coords)
-        layer.set_cells_terrain_connect(
+        _apply_terrain_connect(
+            layer,
             terrain_cells,
             int(terrain_fill.get("terrain_set", 0)),
             int(terrain_fill.get("terrain", 0)),
-            bool(terrain_fill.get("ignore_empty_terrains", true))
+            bool(terrain_fill.get("ignore_empty_terrains", true)),
+            "paint_tilemap.terrain_fills"
         )
     return true
+
+func _apply_terrain_connect(layer: TileMapLayer, cells: Array[Vector2i], terrain_set: int, terrain: int, ignore_empty_terrains: bool, context: String) -> void:
+    # set_cells_terrain_connect silently paints nothing when the TileSet has no
+    # tile whose peering bits match the requested neighbourhood, so say so
+    # instead of reporting a successful save over an empty map.
+    layer.set_cells_terrain_connect(cells, terrain_set, terrain, ignore_empty_terrains)
+    var still_empty := 0
+    for coords in cells:
+        if layer.get_cell_source_id(coords) == -1:
+            still_empty += 1
+    if still_empty > 0:
+        utils_script.log_info("[WARN] %s: set_cells_terrain_connect left %d of %d cells empty - terrain_set %d / terrain %d has no tile matching those neighbours. Give the tiles peering bits with build_tileset (sources[].tile_defaults.peering / terrain_sets), or paint the tiles directly with source_id + atlas_coords." % [context, still_empty, cells.size(), terrain_set, terrain])
 
 func _set_tilemap_cell(layer: TileMapLayer, cell: Dictionary, coords: Variant) -> bool:
     if not (coords is Vector2i):
@@ -882,6 +900,221 @@ func _coerce_cell_coords(raw_coords: Variant, context: String) -> Variant:
         return Vector2i(int(raw_coords[0]), int(raw_coords[1]))
     utils_script.log_error(context + " requires cell coords as {x,y} or [x,y]")
     return null
+
+# --- ASCII level painting ---------------------------------------------------
+# Levels are authored AND verified as text: paint_tilemap.ascii_map /
+# paint_gridmap.ascii_layers write them, inspect_tilemap reads them back in the
+# same shape. The legend is the one and only char -> tile mechanism; "." and " "
+# always mean "leave this cell alone" so a map can be drawn with holes.
+
+func _coerce_ascii_rows(raw_rows: Variant, context: String) -> PackedStringArray:
+    # Returns an empty array on failure (after logging) — a valid map always has
+    # at least one non-empty row.
+    var rows := PackedStringArray()
+    if raw_rows is String:
+        for line in (raw_rows as String).split("\n"):
+            rows.append(str(line).trim_suffix("\r"))
+    elif raw_rows is Array:
+        for raw_row in (raw_rows as Array):
+            if not (raw_row is String):
+                utils_script.log_error(context + " entries must be strings, e.g. [\"#####\", \"#...#\"]")
+                return PackedStringArray()
+            rows.append((raw_row as String).trim_suffix("\r"))
+    else:
+        utils_script.log_error(context + " must be an array of strings or one \\n-separated string, e.g. [\"#####\", \"#...#\"]")
+        return PackedStringArray()
+
+    while rows.size() > 0 and rows[0].is_empty():
+        rows.remove_at(0)
+    while rows.size() > 0 and rows[rows.size() - 1].is_empty():
+        rows.remove_at(rows.size() - 1)
+    if rows.is_empty():
+        utils_script.log_error(context + " must contain at least one non-empty row, e.g. [\"#####\", \"#...#\"]")
+        return PackedStringArray()
+
+    var first_row: String = rows[0]
+    var shortest := first_row.length()
+    var longest := first_row.length()
+    for index in range(rows.size()):
+        var row: String = rows[index]
+        shortest = mini(shortest, row.length())
+        longest = maxi(longest, row.length())
+    if shortest != longest:
+        utils_script.log_info("[WARN] %s rows have unequal lengths (%d..%d); short rows simply stop early — pad them with '.' so the columns line up" % [context, shortest, longest])
+    return rows
+
+func _check_ascii_chars(rows: PackedStringArray, legend: Dictionary, context: String) -> bool:
+    var unknown := {}
+    for row_index in range(rows.size()):
+        var row: String = rows[row_index]
+        for column_index in range(row.length()):
+            var symbol := row.substr(column_index, 1)
+            if legend.has(symbol) or symbol == "." or symbol == " ":
+                continue
+            unknown[symbol] = true
+    if unknown.is_empty():
+        return true
+
+    var unknown_list := PackedStringArray()
+    for raw_symbol in unknown.keys():
+        unknown_list.append("'" + str(raw_symbol) + "'")
+    var legend_list := PackedStringArray()
+    for raw_key in legend.keys():
+        legend_list.append("'" + str(raw_key) + "'")
+    var legend_text := "(legend is empty)"
+    if not legend_list.is_empty():
+        legend_text = ", ".join(legend_list)
+    utils_script.log_error("%s uses characters that are not in the legend: %s. Legend keys: %s. '.' and ' ' always mean \"leave this cell untouched\". Add the missing characters to the legend or replace them with '.' — nothing was painted and the scene was not saved." % [context, ", ".join(unknown_list), legend_text])
+    return false
+
+func _paint_tilemap_ascii(layer: TileMapLayer, raw_ascii: Variant) -> bool:
+    if not (raw_ascii is Dictionary):
+        utils_script.log_error("paint_tilemap.ascii_map must be an object like {\"legend\": {\"#\": {\"source_id\": 0, \"atlas_coords\": {\"x\": 0, \"y\": 0}}, \".\": null}, \"rows\": [\"#####\", \"#...#\"], \"origin\": {\"x\": 0, \"y\": 0}}")
+        return false
+    var ascii_map := raw_ascii as Dictionary
+
+    var raw_legend: Variant = ascii_map.get("legend", {})
+    if not (raw_legend is Dictionary):
+        utils_script.log_error("paint_tilemap.ascii_map.legend must be an object mapping single characters to tiles, e.g. {\"#\": {\"source_id\": 0, \"atlas_coords\": {\"x\": 0, \"y\": 0}}, \"G\": {\"terrain_set\": 0, \"terrain\": 1}, \".\": null}")
+        return false
+    var legend := raw_legend as Dictionary
+
+    var rows: PackedStringArray = _coerce_ascii_rows(ascii_map.get("rows"), "paint_tilemap.ascii_map.rows")
+    if rows.is_empty():
+        return false
+    if not _check_ascii_chars(rows, legend, "paint_tilemap.ascii_map"):
+        return false
+
+    var origin := Vector2i.ZERO
+    if ascii_map.has("origin"):
+        var origin_coords: Variant = _coerce_cell_coords(ascii_map.get("origin"), "paint_tilemap.ascii_map.origin")
+        if origin_coords == null:
+            return false
+        origin = origin_coords
+    var erase_unlisted: bool = bool(ascii_map.get("erase_unlisted", false))
+
+    # Terrain characters cannot be painted cell by cell — set_cells_terrain_connect
+    # needs the whole run at once so it can pick the matching corner/side tiles.
+    var terrain_groups := {}
+
+    for row_index in range(rows.size()):
+        var row: String = rows[row_index]
+        for column_index in range(row.length()):
+            var symbol := row.substr(column_index, 1)
+            var coords := Vector2i(origin.x + column_index, origin.y + row_index)
+            var tile: Variant = legend.get(symbol, null)
+            if tile == null:
+                if erase_unlisted:
+                    layer.erase_cell(coords)
+                continue
+            if not (tile is Dictionary):
+                utils_script.log_error("paint_tilemap.ascii_map.legend[\"%s\"] must be an object like {\"source_id\": 0, \"atlas_coords\": {\"x\": 0, \"y\": 0}} or {\"terrain_set\": 0, \"terrain\": 1}, or null to leave those cells untouched" % symbol)
+                return false
+            var tile_dict := tile as Dictionary
+            if tile_dict.has("terrain"):
+                if tile_dict.has("source_id") or tile_dict.has("atlas_coords"):
+                    utils_script.log_error("paint_tilemap.ascii_map.legend[\"%s\"] mixes a terrain with an atlas tile; use either {\"source_id\": 0, \"atlas_coords\": {...}} or {\"terrain_set\": 0, \"terrain\": 1}" % symbol)
+                    return false
+                var group_key := "%d/%d/%d" % [
+                    int(tile_dict.get("terrain_set", 0)),
+                    int(tile_dict.get("terrain", 0)),
+                    1 if bool(tile_dict.get("ignore_empty_terrains", true)) else 0
+                ]
+                if not terrain_groups.has(group_key):
+                    var fresh_cells: Array[Vector2i] = []
+                    terrain_groups[group_key] = {
+                        "terrain_set": int(tile_dict.get("terrain_set", 0)),
+                        "terrain": int(tile_dict.get("terrain", 0)),
+                        "ignore_empty_terrains": bool(tile_dict.get("ignore_empty_terrains", true)),
+                        "cells": fresh_cells
+                    }
+                var group: Dictionary = terrain_groups[group_key]
+                var group_cells: Array[Vector2i] = group["cells"]
+                group_cells.append(coords)
+                continue
+            if not _set_tilemap_cell(layer, tile_dict, coords):
+                return false
+
+    for pending_key in terrain_groups.keys():
+        var pending: Dictionary = terrain_groups[pending_key]
+        var connect_cells: Array[Vector2i] = pending["cells"]
+        _apply_terrain_connect(
+            layer,
+            connect_cells,
+            int(pending["terrain_set"]),
+            int(pending["terrain"]),
+            bool(pending["ignore_empty_terrains"]),
+            "paint_tilemap.ascii_map terrain legend"
+        )
+    return true
+
+func _paint_gridmap_ascii(grid: GridMap, valid_items: PackedInt32Array, params: Dictionary) -> bool:
+    var raw_layers: Variant = params.get("ascii_layers", [])
+    if not (raw_layers is Array) or (raw_layers as Array).is_empty():
+        utils_script.log_error("paint_gridmap.ascii_layers must be a non-empty array like [{\"y\": 0, \"rows\": [\"AAAA\", \"A..A\"]}] together with a \"legend\" such as {\"A\": {\"item\": 0, \"orientation\": 0}, \".\": null}")
+        return false
+    var raw_legend: Variant = params.get("legend", {})
+    if not (raw_legend is Dictionary):
+        utils_script.log_error("paint_gridmap.legend must be an object mapping single characters to mesh library items, e.g. {\"A\": {\"item\": 0, \"orientation\": 0}, \".\": null}")
+        return false
+    var legend := raw_legend as Dictionary
+    var erase_unlisted: bool = bool(params.get("erase_unlisted", false))
+
+    # Validate every layer before touching a cell so a typo in the last layer
+    # cannot leave the first one half painted.
+    var parsed: Array = []
+    for raw_layer in (raw_layers as Array):
+        if not (raw_layer is Dictionary):
+            utils_script.log_error("paint_gridmap.ascii_layers entries must be objects like {\"y\": 0, \"rows\": [\"AAAA\", \"A..A\"]}")
+            return false
+        var layer_spec := raw_layer as Dictionary
+        var rows: PackedStringArray = _coerce_ascii_rows(layer_spec.get("rows"), "paint_gridmap.ascii_layers.rows")
+        if rows.is_empty():
+            return false
+        if not _check_ascii_chars(rows, legend, "paint_gridmap.ascii_layers"):
+            return false
+        var origin_x := 0
+        var origin_z := 0
+        if layer_spec.has("origin"):
+            var raw_origin: Variant = layer_spec.get("origin")
+            if not (raw_origin is Dictionary):
+                utils_script.log_error("paint_gridmap.ascii_layers[].origin must be an object like {\"x\": 0, \"z\": 0}")
+                return false
+            var origin_dict := raw_origin as Dictionary
+            origin_x = int(origin_dict.get("x", 0))
+            origin_z = int(origin_dict.get("z", 0))
+        parsed.append({"y": int(layer_spec.get("y", 0)), "origin_x": origin_x, "origin_z": origin_z, "rows": rows})
+
+    for raw_parsed in parsed:
+        var spec: Dictionary = raw_parsed
+        var layer_rows: PackedStringArray = spec["rows"]
+        var layer_y: int = spec["y"]
+        var base_x: int = spec["origin_x"]
+        var base_z: int = spec["origin_z"]
+        for row_index in range(layer_rows.size()):
+            var row: String = layer_rows[row_index]
+            for column_index in range(row.length()):
+                var symbol := row.substr(column_index, 1)
+                var coords := Vector3i(base_x + column_index, layer_y, base_z + row_index)
+                var tile: Variant = legend.get(symbol, null)
+                if tile == null:
+                    if erase_unlisted:
+                        grid.set_cell_item(coords, GridMap.INVALID_CELL_ITEM)
+                    continue
+                if not (tile is Dictionary):
+                    utils_script.log_error("paint_gridmap.legend[\"%s\"] must be an object like {\"item\": 0, \"orientation\": 0}, or null to leave those cells untouched" % symbol)
+                    return false
+                var tile_dict := tile as Dictionary
+                if not tile_dict.has("item"):
+                    utils_script.log_error("paint_gridmap.legend[\"%s\"] needs an \"item\" id from the MeshLibrary, e.g. {\"item\": 0, \"orientation\": 0}; map the character to null to leave those cells untouched" % symbol)
+                    return false
+                var cell := {
+                    "item": int(tile_dict.get("item", -1)),
+                    "orient": int(tile_dict.get("orientation", tile_dict.get("orient", 0)))
+                }
+                if not _set_gridmap_cell(grid, valid_items, coords, cell):
+                    return false
+    return true
 
 func paint_gridmap(params: Dictionary) -> bool:
     var node = _resolve_node(params.get("node_path", "root"), "node_path")
@@ -958,6 +1191,10 @@ func paint_gridmap(params: Dictionary) -> bool:
                 for x in range(start.x, finish.x + 1):
                     if not _set_gridmap_cell(grid, valid_items, Vector3i(x, y, z), fill):
                         return false
+
+    if params.has("ascii_layers"):
+        if not _paint_gridmap_ascii(grid, valid_items, params):
+            return false
     return true
 
 func _set_gridmap_cell(grid: GridMap, valid_items: PackedInt32Array, coords: Variant, cell: Dictionary) -> bool:
@@ -1211,28 +1448,13 @@ func _apply_common_node_configuration(node: Node, params: Dictionary) -> bool:
     return true
 
 func _apply_properties(target: Object, raw_properties: Variant, use_indexed: bool, context: String) -> bool:
-    if not (raw_properties is Dictionary):
-        if raw_properties == null:
-            return true
-        utils_script.log_error(context + " must be a dictionary")
-        return false
-
-    var property_map = raw_properties as Dictionary
-    for property_name in property_map.keys():
-        var property_key = str(property_name)
-        var converted_value = _convert_json_value(property_map[property_name], "%s.%s" % [context, property_key])
-        if converted_value == null and property_map[property_name] != null:
-            return false
-
-        if use_indexed:
-            target.set_indexed(NodePath(property_key), converted_value)
-        else:
-            if not _object_has_property(target, property_key):
-                utils_script.log_error("Unknown property '%s' on %s" % [property_key, target.get_class()])
-                return false
-            target.set(property_key, converted_value)
-
-    return true
+    # One implementation for scene and resource property writes: the codec also
+    # converts values into typed Array/Dictionary exports (Object.set() would
+    # otherwise drop them without a word) and names the script's exported
+    # properties when a name is misspelled.
+    if raw_properties == null:
+        return true
+    return variant_codec.apply_properties(target, raw_properties, context, use_indexed)
 
 func _apply_side_values(control: Control, raw_values: Variant, anchors: bool) -> bool:
     if not (raw_values is Dictionary):
@@ -1545,12 +1767,6 @@ func _coerce_vector2(raw_value: Variant, field_name: String) -> Variant:
 
     utils_script.log_error("Expected a Vector2-compatible value for " + field_name)
     return null
-
-func _object_has_property(target: Object, property_name: String) -> bool:
-    for property_info in target.get_property_list():
-        if str(property_info.get("name", "")) == property_name:
-            return true
-    return false
 
 func _disconnect_matching_connections(signal_ref: Signal, target: Object, method_name: String) -> void:
     var target_id = target.get_instance_id()

@@ -31,6 +31,7 @@ Load this reference only when the task involves generated art, cutouts, or frame
 - Change only pose or timing from frame to frame; do not redesign the character or prop mid-sequence.
 - Generate or repair frames individually, then build `SpriteFrames` in Godot with `build_sprite_frames`.
 - Export a sprite sheet only when the user explicitly asks for one.
+- Verify generated frames before building the animation: `inspect_image '{"image_paths":["textures/hero_idle_cutout"],"expect":{"frames_consistent":true,"not_blank":true,"has_alpha":true}}'` fails the run when a frame is empty, lost its transparency in the cutout, or changed canvas size.
 
 ## Local cutout tool
 
